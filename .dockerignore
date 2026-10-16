@@ -1,0 +1,17 @@
+.git
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+.playwright-mcp
+bin/
+work/
+test-files/
+validation/
+docs/
+tests/
+frontend/node_modules
+frontend/dist
+.env
+.mcp.json
+*.jsonld

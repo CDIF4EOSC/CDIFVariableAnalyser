@@ -1,0 +1,220 @@
+{
+ "number_rows": 2420,
+ "column_names": [
+  "name",
+  "essround",
+  "edition",
+  "proddate",
+  "idno",
+  "cntry",
+  "dweight",
+  "pweight",
+  "ppltrst",
+  "hinctnta",
+  "prob",
+  "stratum",
+  "psu"
+ ],
+ "variables": {
+  "name": {
+   "label": "Title of dataset",
+   "format": "A8",
+   "readstat_type": "string",
+   "measure": "nominal",
+   "value_labels": {},
+   "missing_ranges": []
+  },
+  "essround": {
+   "label": "ESS round",
+   "format": "F2.0",
+   "readstat_type": "double",
+   "measure": "scale",
+   "value_labels": {},
+   "missing_ranges": []
+  },
+  "edition": {
+   "label": "Edition",
+   "format": "A3",
+   "readstat_type": "string",
+   "measure": "nominal",
+   "value_labels": {},
+   "missing_ranges": []
+  },
+  "proddate": {
+   "label": "Production date",
+   "format": "A10",
+   "readstat_type": "string",
+   "measure": "nominal",
+   "value_labels": {},
+   "missing_ranges": []
+  },
+  "idno": {
+   "label": "Respondent's identification number",
+   "format": "F5.0",
+   "readstat_type": "double",
+   "measure": "nominal",
+   "value_labels": {},
+   "missing_ranges": []
+  },
+  "cntry": {
+   "label": "Country",
+   "format": "A2",
+   "readstat_type": "string",
+   "measure": "nominal",
+   "value_labels": {
+    "AL": "Albania",
+    "AT": "Austria",
+    "BE": "Belgium",
+    "BG": "Bulgaria",
+    "CH": "Switzerland",
+    "CY": "Cyprus",
+    "CZ": "Czechia",
+    "DE": "Germany",
+    "DK": "Denmark",
+    "EE": "Estonia",
+    "ES": "Spain",
+    "FI": "Finland",
+    "FR": "France",
+    "GB": "United Kingdom",
+    "GE": "Georgia",
+    "GR": "Greece",
+    "HR": "Croatia",
+    "HU": "Hungary",
+    "IE": "Ireland",
+    "IS": "Iceland",
+    "IL": "Israel",
+    "IT": "Italy",
+    "LT": "Lithuania",
+    "LU": "Luxembourg",
+    "LV": "Latvia",
+    "ME": "Montenegro",
+    "MK": "North Macedonia",
+    "NL": "Netherlands",
+    "NO": "Norway",
+    "PL": "Poland",
+    "PT": "Portugal",
+    "RO": "Romania",
+    "RS": "Serbia",
+    "RU": "Russian Federation",
+    "SE": "Sweden",
+    "SI": "Slovenia",
+    "SK": "Slovakia",
+    "TR": "Turkey",
+    "UA": "Ukraine",
+    "XK": "Kosovo"
+   },
+   "missing_ranges": []
+  },
+  "dweight": {
+   "label": "Design weight",
+   "format": "F3.2",
+   "readstat_type": "double",
+   "measure": "scale",
+   "value_labels": {},
+   "missing_ranges": []
+  },
+  "pweight": {
+   "label": "Population size weight (must be combined with dweight or pspwght)",
+   "format": "F3.2",
+   "readstat_type": "double",
+   "measure": "scale",
+   "value_labels": {},
+   "missing_ranges": []
+  },
+  "ppltrst": {
+   "label": "Most people can be trusted or you can't be too careful",
+   "format": "F2.0",
+   "readstat_type": "double",
+   "measure": "nominal",
+   "value_labels": {
+    "0": "You can't be too careful",
+    "1": "1",
+    "2": "2",
+    "3": "3",
+    "4": "4",
+    "5": "5",
+    "6": "6",
+    "7": "7",
+    "8": "8",
+    "9": "9",
+    "10": "Most people can be trusted",
+    "77": "Refusal",
+    "88": "Don't know",
+    "99": "No answer"
+   },
+   "missing_ranges": [
+    {
+     "lo": "77",
+     "hi": "77"
+    },
+    {
+     "lo": "88",
+     "hi": "88"
+    },
+    {
+     "lo": "99",
+     "hi": "99"
+    }
+   ]
+  },
+  "hinctnta": {
+   "label": "Household's total net income, all sources",
+   "format": "F2.0",
+   "readstat_type": "double",
+   "measure": "nominal",
+   "value_labels": {
+    "1": "J - 1st decile",
+    "2": "R - 2nd decile",
+    "3": "C - 3rd decile",
+    "4": "M - 4th decile",
+    "5": "F - 5th decile",
+    "6": "S - 6th decile",
+    "7": "K - 7th decile",
+    "8": "P - 8th decile",
+    "9": "D - 9th decile",
+    "10": "H - 10th decile",
+    "77": "Refusal",
+    "88": "Don't know",
+    "99": "No answer"
+   },
+   "missing_ranges": [
+    {
+     "lo": "77",
+     "hi": "77"
+    },
+    {
+     "lo": "88",
+     "hi": "88"
+    },
+    {
+     "lo": "99",
+     "hi": "99"
+    }
+   ]
+  },
+  "prob": {
+   "label": "Sampling probability",
+   "format": "F3.2",
+   "readstat_type": "double",
+   "measure": "scale",
+   "value_labels": {},
+   "missing_ranges": []
+  },
+  "stratum": {
+   "label": "Sampling stratum",
+   "format": "F3.0",
+   "readstat_type": "double",
+   "measure": "scale",
+   "value_labels": {},
+   "missing_ranges": []
+  },
+  "psu": {
+   "label": "Primary sampling unit",
+   "format": "F5.0",
+   "readstat_type": "double",
+   "measure": "scale",
+   "value_labels": {},
+   "missing_ranges": []
+  }
+ }
+}

@@ -1,0 +1,340 @@
+{
+  "name": "metadata-spss-measure-enrichment",
+  "nodes": [
+    {
+      "id": "b3960f05-3fa4-418d-996c-3238a7a9ab2e",
+      "name": "Webhook",
+      "webhookId": "e59868d7-0a66-4a8a-b778-eff3fda842c8",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -272,
+        304
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "metadata-spss-measure-enrichment",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "EG1cw8ySdLvD9zTw",
+          "name": "Metadata Enrichment Webhook Header Auth"
+        }
+      }
+    },
+    {
+      "id": "33a3f785-35f3-4120-9453-0f7690c757cc",
+      "name": "Split into Chunks",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        464,
+        304
+      ],
+      "parameters": {
+        "jsCode": "// Already validated and projected onto this task's fields by \"Normalize Input\".\nconst variables = $input.first().json.variables;\nconst chunkSize = 20;\n\nconst measureLines = [\n  'Scale',\n  'Definition: Numeric values where magnitude and the distance between values are meaningful (interval or ratio).',\n  'Cues: age in years, income, hours, counts, amounts, durations, percentages, weights, factor scores, indices, dates stored as numbers.',\n  '',\n  'Ordinal',\n  'Definition: Categories with an intrinsic order, but the distance between adjacent categories is not meaningful.',\n  'Cues: Likert agreement scales, satisfaction ratings, education level, ISCED, frequency bands (never/sometimes/often), income brackets, deciles, left-right placement 0-10, self-rated health.',\n  '',\n  'Nominal',\n  'Definition: Categories with no intrinsic order.',\n  'Cues: sex, country, region code, occupation code, marital status, yes/no flags, party voted for, identifiers, free-text strings, interviewer id.'\n];\n\nconst measureContext = measureLines.join('\\n');\n\nconst systemPrompt = 'You are a metadata classification assistant that assigns the SPSS Measure (level of measurement) to survey variables.\\n\\nThe Measure is a property of how the values of the variable relate to each other. Every variable carries exactly one of these three levels:\\n\\n' + measureContext + '\\n\\nFor each variable, return the single measurement level that applies.\\n- Use every field given for a variable together: variable_name, variable_label, variable_description, variable_source_question, variable_datatype, variable_format, variable_value_labels (at most the first 15 value/label pairs; variable_value_labels_total is the full count) and variable_missing_values. A missing field means it is unknown.\\n- A variable whose values carry substantive labels for each code is categorical: choose Ordinal if the categories form a ranked sequence, otherwise Nominal.\\n- A 0-10 or 1-7 rating with labelled endpoints only (e.g. 0 = not at all, 10 = completely) is Ordinal, not Scale.\\n- Numeric quantities with a unit (years, hours, NOK, persons, percent) are Scale even when a few codes such as 777/888/999 are reserved for missing values.\\n- Identifiers, ids, serial numbers, string variables, and open-text answers are Nominal.\\n- Binary yes/no or dummy 0/1 variables are Nominal.\\n- Weights, sampling fractions and derived indices are Scale.\\n- Do not answer with more than one level and do not invent a level outside the list.\\n- Return exactly one entry per variable, echoing variable_name unchanged.';\n\nconst chunks = [];\nfor (let i = 0; i < variables.length; i += chunkSize) {\n  chunks.push(variables.slice(i, i + chunkSize));\n}\n\nreturn chunks.map(chunk => ({\n  json: {\n    systemPrompt,\n    userMessage: JSON.stringify(chunk, null, 2)\n  }\n}));\n"
+      }
+    },
+    {
+      "id": "e13567c9-7d4e-4778-bfb2-31ba70f207ef",
+      "name": "Basic LLM Chain",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "onError": "continueRegularOutput",
+      "position": [
+        720,
+        304
+      ],
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.userMessage }}",
+        "hasOutputParser": true,
+        "messages": {
+          "messageValues": [
+            {
+              "message": "={{ $json.systemPrompt }}"
+            }
+          ]
+        },
+        "batching": {
+          "batchSize": 3,
+          "delayBetweenBatches": 500
+        }
+      }
+    },
+    {
+      "id": "ada27749-2189-4017-96af-4d7f63de1da2",
+      "name": "Azure OpenAI Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAzureOpenAi",
+      "typeVersion": 1,
+      "position": [
+        608,
+        512
+      ],
+      "parameters": {
+        "model": "gpt-5.6-terra",
+        "options": {}
+      },
+      "credentials": {
+        "azureOpenAiApi": {
+          "id": "KKIwbsVKQUA5Kqyu",
+          "name": "Azure Open AI Modansa Terra"
+        }
+      }
+    },
+    {
+      "id": "b43e3e05-8a67-4c8b-b0b9-3f6fe1a21538",
+      "name": "Structured Output Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        864,
+        512
+      ],
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"results\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"properties\": {\n          \"variable_name\": {\n            \"description\": \"Name of the variable, echoed from the request\",\n            \"type\": \"string\"\n          },\n          \"measure\": {\n            \"description\": \"Assigned SPSS measurement level\",\n            \"type\": \"string\",\n            \"enum\": [\n              \"Scale\",\n              \"Ordinal\",\n              \"Nominal\"\n            ]\n          }\n        },\n        \"required\": [\n          \"variable_name\",\n          \"measure\"\n        ],\n        \"type\": \"object\"\n      }\n    }\n  },\n  \"required\": [\n    \"results\"\n  ]\n}",
+        "autoFix": true
+      }
+    },
+    {
+      "id": "5f85001b-5d07-4e66-bbdf-c0099f2de0b8",
+      "name": "Merge Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        992,
+        304
+      ],
+      "parameters": {
+        "jsCode": "// Collect per-chunk results.\n// \"Basic LLM Chain\" runs with onError: continueRegularOutput, so a chunk whose\n// LLM call or output parsing failed arrives here with no `output`. Emit a record\n// for it instead of throwing -- one bad chunk must not take down the whole response.\n// measure is exactly one of Scale | Ordinal | Nominal; anything else is a failure.\nconst ALLOWED = new Set(['Scale', 'Ordinal', 'Nominal']);\nconst results = [];\nlet ok = 0;\nlet failed = 0;\n\nfor (const item of $input.all()) {\n  const j = item.json || {};\n  const chunkResults = j.output && Array.isArray(j.output.results) ? j.output.results : null;\n\n  if (chunkResults) {\n    for (const r of chunkResults) {\n      if (ALLOWED.has(r.measure)) {\n        results.push({ variable_name: r.variable_name, measure: r.measure, status: 'ok' });\n        ok++;\n      } else {\n        results.push({ variable_name: r.variable_name, measure: '', status: 'failed',\n          error: 'Model returned a measure outside Scale/Ordinal/Nominal: ' + JSON.stringify(r.measure) });\n        failed++;\n      }\n    }\n    continue;\n  }\n\n  // userMessage is JSON.stringify(chunk), so the variable names are recoverable.\n  let names = [];\n  try {\n    const chunk = JSON.parse(j.userMessage || '[]');\n    names = Array.isArray(chunk) ? chunk.map((v) => v.variable_name || '') : [];\n  } catch (e) { /* leave empty */ }\n\n  const err = j.error;\n  const message = (err && (err.message || err.description)) ||\n    'LLM chain produced no parsable output';\n\n  if (names.length === 0) names = [''];\n  for (const name of names) {\n    results.push({ variable_name: name, measure: '', status: 'failed', error: message });\n    failed++;\n  }\n}\n\nreturn [{ json: { results, ok, failed, total: results.length } }];\n"
+      }
+    },
+    {
+      "id": "ee5de0e8-bd70-42cb-a787-06d694e6b152",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1248,
+        304
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "768a79ab-6dec-4f86-8841-a9d2843b4045",
+      "name": "When Executed by Another Workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -272,
+        112
+      ],
+      "parameters": {
+        "inputSource": "workflowInputs",
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "variables",
+              "type": "array"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "3b848284-5c03-4af8-90de-5e295cc1e7ed",
+      "name": "Normalize Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -48,
+        208
+      ],
+      "parameters": {
+        "jsCode": "// Normalize Input -- shared by every variable-enrichment workflow.\n// Contract: schemas/variable_input.py (VariableInput). Generated by\n// `python schemas/variable_input.py --node <task>`; edit the template, not the node.\n// FIELDS is the subset of VariableInput this task's LLM sees (TASK_FIELDS[\"spss-measure\"]).\nconst FIELDS = [\"variable_label\", \"variable_description\", \"variable_source_question\", \"variable_datatype\", \"variable_format\", \"variable_value_labels\", \"variable_value_labels_total\", \"variable_missing_values\"];\nconst MAX_VALUE_LABELS = 15;\nconst LEGACY = { label: 'variable_label', description: 'variable_description', source_question: 'variable_source_question' };\n\n// Webhook puts the payload under body; the Execute Workflow Trigger does not.\nconst input = $input.first().json;\nconst variables = input.body ? input.body.variables : input.variables;\n\nconst fail = (error) => [{ json: { valid: false, error } }];\nif (!Array.isArray(variables) || variables.length === 0) {\n  return fail('Expected a non-empty \"variables\" array of VariableInput objects.');\n}\n\nconst isEmpty = (v) => v === null || v === undefined || v === '' || (Array.isArray(v) && v.length === 0);\nconst out = [];\n\nfor (const [i, v] of variables.entries()) {\n  if (!v || typeof v !== 'object' || Array.isArray(v)) return fail(`variables[${i}] is not an object.`);\n  if (typeof v.variable_name !== 'string' || !v.variable_name) return fail(`variables[${i}] is missing variable_name.`);\n\n  const legacy = Object.keys(LEGACY).filter((k) => k in v);\n  if (legacy.length) {\n    const hint = legacy.map((k) => `${k} -> ${LEGACY[k]}`).join(', ');\n    return fail(`variables[${i}] (${v.variable_name}) uses legacy keys; rename ${hint}.`);\n  }\n\n  const labels = (Array.isArray(v.variable_value_labels) ? v.variable_value_labels : [])\n    .filter((l) => l && l.value !== undefined && l.label !== undefined)\n    .map((l) => ({ value: String(l.value), label: String(l.label) }));\n  const full = {\n    ...v,\n    variable_value_labels: labels.slice(0, MAX_VALUE_LABELS),\n    variable_value_labels_total: labels.length ? (v.variable_value_labels_total ?? labels.length) : null,\n  };\n\n  const item = { variable_name: v.variable_name };\n  for (const f of FIELDS) {\n    if (!isEmpty(full[f])) item[f] = full[f];\n  }\n  out.push(item);\n}\n\nreturn [{ json: { valid: true, variables: out } }];\n"
+      }
+    },
+    {
+      "id": "ff69c4d4-7061-499a-b6ba-fbf12a39f5c2",
+      "name": "Input Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        176,
+        208
+      ],
+      "parameters": {
+        "options": {},
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "valid-check",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "dd64c306-d868-4802-83ad-060840bfc3d6",
+      "name": "Respond Invalid Input",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        432,
+        16
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: false, error: $json.error }) }}",
+        "options": {
+          "responseCode": 400
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Split into Chunks": {
+      "main": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Azure OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "ai_languageModel",
+            "index": 0
+          },
+          {
+            "node": "Structured Output Parser",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structured Output Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Basic LLM Chain": {
+      "main": [
+        [
+          {
+            "node": "Merge Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Results": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalize Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Normalize Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Input": {
+      "main": [
+        [
+          {
+            "node": "Input Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Input Valid?": {
+      "main": [
+        [
+          {
+            "node": "Split into Chunks",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Invalid Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": true
+  },
+  "pinData": null,
+  "active": true,
+  "meta": null,
+  "tags": [],
+  "id": "tuRgtz0JyOeUYr9i"
+}

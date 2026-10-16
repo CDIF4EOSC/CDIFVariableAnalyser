@@ -1,0 +1,340 @@
+{
+  "name": "metadata-function-enrichment",
+  "nodes": [
+    {
+      "id": "node-webhook",
+      "name": "Webhook",
+      "webhookId": "509d824d-a7e8-4ee1-992f-141c30f9de04",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -272,
+        304
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "metadata-function-enrichment",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "EG1cw8ySdLvD9zTw",
+          "name": "Metadata Enrichment Webhook Header Auth"
+        }
+      }
+    },
+    {
+      "id": "node-build-prompt",
+      "name": "Split into Chunks",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        464,
+        304
+      ],
+      "parameters": {
+        "jsCode": "// Already validated and projected onto this task's fields by \"Normalize Input\".\nconst variables = $input.first().json.variables;\nconst chunkSize = 20;\n\nconst functionLines = [\n  'UnitIdentifier',\n  'Definition: The variable identifies the unit (case) the data point describes.',\n  'Cues: respondent id, person id, household id, enterprise id, case number, serial number.',\n  '',\n  'GeographicDimension',\n  'Definition: The variable places the data point in a geographic area or location.',\n  'Cues: country, region, NUTS code, municipality, county, postal area, place of interview.',\n  '',\n  'TemporalDimension',\n  'Definition: The variable places the data point at a time point or period.',\n  'Cues: reference year, survey round, wave, quarter, month, date of interview.',\n  '',\n  'Weight',\n  'Definition: The variable holds a weighting factor applied when analysing the data.',\n  'Cues: design weight, post-stratification weight, population size weight, analysis weight, grossing-up factor, calibration factor.',\n  '',\n  'SamplingDesign',\n  'Definition: The variable carries the position of the unit in the sample design.',\n  'Cues: primary sampling unit (PSU), stratum, cluster, sampling point, replicate.'\n];\n\nconst functionContext = functionLines.join('\\n');\n\nconst systemPrompt = 'You are a metadata classification assistant for DDI variableFunction.\\n\\nvariableFunction records an immutable characteristic of the variable itself -- what the variable IS within a dataset, not what its values say. A variable may carry several functions, and most substantive variables carry none at all.\\n\\nThe controlled vocabulary has exactly these five terms:\\n\\n' + functionContext + '\\n\\nFor each variable, return the list of functions that apply.\\n- Use every field given for a variable together: variable_name, variable_label, variable_description, variable_source_question, variable_datatype, variable_format, variable_measure, variable_value_labels (at most the first 15 value/label pairs; variable_value_labels_total is the full count) and variable_missing_values. A missing field means it is unknown.\\n- Return an empty list for any variable that simply records an observed or derived value: survey answers, measurements, counts, amounts, rates, scores, opinions, status flags, classifications of the unit such as sex, age, education or income. This is the normal case -- do not force a function.\\n- Assign a function only when the variable exists to identify, position or weight the data point rather than to measure something about it.\\n- UnitIdentifier is for the identifier of the unit the data point describes, not for codes that classify it: a respondent id is a UnitIdentifier, an occupation code is not.\\n- Age, birth year and duration are measured values, not TemporalDimension. Use TemporalDimension only for the reference time of the data point itself.\\n- Country of birth, country of citizenship and similar substantive answers are measured values, not GeographicDimension. Use GeographicDimension only when the variable places the data point in a geography.\\n- Return more than one term only when the variable genuinely serves several functions.\\n- Return exactly one entry per variable, echoing variable_name unchanged.';\n\nconst chunks = [];\nfor (let i = 0; i < variables.length; i += chunkSize) {\n  chunks.push(variables.slice(i, i + chunkSize));\n}\n\nreturn chunks.map(chunk => ({\n  json: {\n    systemPrompt,\n    userMessage: JSON.stringify(chunk, null, 2)\n  }\n}));\n"
+      }
+    },
+    {
+      "id": "node-llm-chain",
+      "name": "Basic LLM Chain",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "onError": "continueRegularOutput",
+      "position": [
+        720,
+        304
+      ],
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.userMessage }}",
+        "hasOutputParser": true,
+        "messages": {
+          "messageValues": [
+            {
+              "message": "={{ $json.systemPrompt }}"
+            }
+          ]
+        },
+        "batching": {
+          "batchSize": 3,
+          "delayBetweenBatches": 500
+        }
+      }
+    },
+    {
+      "id": "node-azure-model",
+      "name": "Azure OpenAI Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAzureOpenAi",
+      "typeVersion": 1,
+      "position": [
+        608,
+        512
+      ],
+      "parameters": {
+        "model": "gpt-5.6-terra",
+        "options": {}
+      },
+      "credentials": {
+        "azureOpenAiApi": {
+          "id": "KKIwbsVKQUA5Kqyu",
+          "name": "Azure Open AI Modansa Terra"
+        }
+      }
+    },
+    {
+      "id": "node-output-parser",
+      "name": "Structured Output Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        864,
+        512
+      ],
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"results\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"properties\": {\n          \"variable_name\": {\n            \"description\": \"Name of the variable, echoed from the request\",\n            \"type\": \"string\"\n          },\n          \"variable_function\": {\n            \"description\": \"Zero or more functions; empty when the variable carries none\",\n            \"type\": \"array\",\n            \"items\": {\n              \"type\": \"string\",\n              \"enum\": [\n                \"UnitIdentifier\",\n                \"GeographicDimension\",\n                \"TemporalDimension\",\n                \"Weight\",\n                \"SamplingDesign\"\n              ]\n            }\n          }\n        },\n        \"required\": [\n          \"variable_name\",\n          \"variable_function\"\n        ],\n        \"type\": \"object\"\n      }\n    }\n  },\n  \"required\": [\n    \"results\"\n  ]\n}",
+        "autoFix": true
+      }
+    },
+    {
+      "id": "node-merge-results",
+      "name": "Merge Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        992,
+        304
+      ],
+      "parameters": {
+        "jsCode": "// Collect per-chunk results.\n// \"Basic LLM Chain\" runs with onError: continueRegularOutput, so a chunk whose\n// LLM call or output parsing failed arrives here with no `output`. Emit a record\n// for it instead of throwing -- one bad chunk must not take down the whole response.\n// variable_function is 0..*, so an empty array is a valid answer, not a failure.\nconst results = [];\nlet ok = 0;\nlet failed = 0;\n\nfor (const item of $input.all()) {\n  const j = item.json || {};\n  const chunkResults = j.output && Array.isArray(j.output.results) ? j.output.results : null;\n\n  if (chunkResults) {\n    for (const r of chunkResults) {\n      results.push({\n        ...r,\n        variable_function: Array.isArray(r.variable_function) ? r.variable_function : [],\n        status: 'ok',\n      });\n      ok++;\n    }\n    continue;\n  }\n\n  // userMessage is JSON.stringify(chunk), so the variable names are recoverable.\n  let names = [];\n  try {\n    const chunk = JSON.parse(j.userMessage || '[]');\n    names = Array.isArray(chunk) ? chunk.map((v) => v.variable_name || '') : [];\n  } catch (e) { /* leave empty */ }\n\n  const err = j.error;\n  const message = (err && (err.message || err.description)) ||\n    'LLM chain produced no parsable output';\n\n  if (names.length === 0) names = [''];\n  for (const name of names) {\n    results.push({ variable_name: name, variable_function: [], status: 'failed', error: message });\n    failed++;\n  }\n}\n\nreturn [{ json: { results, ok, failed, total: results.length } }];\n"
+      }
+    },
+    {
+      "id": "node-respond",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1248,
+        304
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "4cf4262f-7abc-4b3c-8dcb-c0253648586f",
+      "name": "When Executed by Another Workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -272,
+        112
+      ],
+      "parameters": {
+        "inputSource": "workflowInputs",
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "variables",
+              "type": "array"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "7e10a982-7b3c-4f9d-84b5-43573397bc88",
+      "name": "Normalize Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -48,
+        208
+      ],
+      "parameters": {
+        "jsCode": "// Normalize Input -- shared by every variable-enrichment workflow.\n// Contract: schemas/variable_input.py (VariableInput). Generated by\n// `python schemas/variable_input.py --node <task>`; edit the template, not the node.\n// FIELDS is the subset of VariableInput this task's LLM sees (TASK_FIELDS[\"function\"]).\nconst FIELDS = [\"variable_label\", \"variable_description\", \"variable_source_question\", \"variable_datatype\", \"variable_format\", \"variable_measure\", \"variable_value_labels\", \"variable_value_labels_total\", \"variable_missing_values\"];\nconst MAX_VALUE_LABELS = 15;\nconst LEGACY = { label: 'variable_label', description: 'variable_description', source_question: 'variable_source_question' };\n\n// Webhook puts the payload under body; the Execute Workflow Trigger does not.\nconst input = $input.first().json;\nconst variables = input.body ? input.body.variables : input.variables;\n\nconst fail = (error) => [{ json: { valid: false, error } }];\nif (!Array.isArray(variables) || variables.length === 0) {\n  return fail('Expected a non-empty \"variables\" array of VariableInput objects.');\n}\n\nconst isEmpty = (v) => v === null || v === undefined || v === '' || (Array.isArray(v) && v.length === 0);\nconst out = [];\n\nfor (const [i, v] of variables.entries()) {\n  if (!v || typeof v !== 'object' || Array.isArray(v)) return fail(`variables[${i}] is not an object.`);\n  if (typeof v.variable_name !== 'string' || !v.variable_name) return fail(`variables[${i}] is missing variable_name.`);\n\n  const legacy = Object.keys(LEGACY).filter((k) => k in v);\n  if (legacy.length) {\n    const hint = legacy.map((k) => `${k} -> ${LEGACY[k]}`).join(', ');\n    return fail(`variables[${i}] (${v.variable_name}) uses legacy keys; rename ${hint}.`);\n  }\n\n  const labels = (Array.isArray(v.variable_value_labels) ? v.variable_value_labels : [])\n    .filter((l) => l && l.value !== undefined && l.label !== undefined)\n    .map((l) => ({ value: String(l.value), label: String(l.label) }));\n  const full = {\n    ...v,\n    variable_value_labels: labels.slice(0, MAX_VALUE_LABELS),\n    variable_value_labels_total: labels.length ? (v.variable_value_labels_total ?? labels.length) : null,\n  };\n\n  const item = { variable_name: v.variable_name };\n  for (const f of FIELDS) {\n    if (!isEmpty(full[f])) item[f] = full[f];\n  }\n  out.push(item);\n}\n\nreturn [{ json: { valid: true, variables: out } }];\n"
+      }
+    },
+    {
+      "id": "d69e56e1-865b-4a21-9437-4b083b0829cd",
+      "name": "Input Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        176,
+        208
+      ],
+      "parameters": {
+        "options": {},
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "valid-check",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "b9e163ee-ec9d-43b1-8cc8-de3c7489154b",
+      "name": "Respond Invalid Input",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        432,
+        16
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: false, error: $json.error }) }}",
+        "options": {
+          "responseCode": 400
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Split into Chunks": {
+      "main": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Azure OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "ai_languageModel",
+            "index": 0
+          },
+          {
+            "node": "Structured Output Parser",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structured Output Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Basic LLM Chain": {
+      "main": [
+        [
+          {
+            "node": "Merge Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Results": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalize Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Normalize Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Input": {
+      "main": [
+        [
+          {
+            "node": "Input Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Input Valid?": {
+      "main": [
+        [
+          {
+            "node": "Split into Chunks",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Invalid Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": true
+  },
+  "pinData": null,
+  "active": true,
+  "meta": null,
+  "id": "9OQwmjQcvhIMputR",
+  "tags": []
+}

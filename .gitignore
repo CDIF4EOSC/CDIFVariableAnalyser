@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.pyc
+bin/qsv
+.pytest_cache/
+work/
+.playwright-mcp/
+frontend/node_modules/
+frontend/dist/
+.env
+.mcp.json
+validation/
+ddi-cdi-1.1beta/
+docstest-files/
+test-files/
+docs/drafts/
+feedback/

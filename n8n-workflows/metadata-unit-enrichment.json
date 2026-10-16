@@ -1,0 +1,344 @@
+{
+  "name": "metadata-unit-enrichment",
+  "nodes": [
+    {
+      "id": "node-webhook",
+      "name": "Webhook",
+      "webhookId": "2c675f28-b449-47fc-8662-183867d36b13",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -272,
+        304
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "metadata-enrichment",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "EG1cw8ySdLvD9zTw",
+          "name": "Metadata Enrichment Webhook Header Auth"
+        }
+      }
+    },
+    {
+      "id": "node-build-prompt",
+      "name": "Split into Chunks",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        464,
+        304
+      ],
+      "parameters": {
+        "jsCode": "// Already validated and projected onto this task's fields by \"Normalize Input\".\nconst variables = $input.first().json.variables;\nconst chunkSize = 20;\n\nconst unitLines = [\n  'LENGTH',\n  '[MTR] m - metre: The metre (m) is the base unit of length in the International System of Units.',\n  '[CMT] cm - centimetre: The centimetre (cm) is a unit of length equivalent to one hundredth of a metre, 10^-2 m (0.01 m).',\n  '[MMT] mm - millimetre: The millimetre (mm) is a unit of length equivalent to one thousandth of a metre, 10^-3 m (0.001 m).',\n  '[KTM] km - kilometre: The kilometre (km) is a unit of length equivalent to 1000 metres, 10^3 m, or about 0.621 miles.',\n  '[C45] nm - nanometre: The nanometre (nm) is a unit of length equal to one billionth of a metre, 10^-9 m.',\n  '',\n  'AREA',\n  '[MTK] m2 - square metre: The square metre (m2) is a unit of area equivalent to a square measuring 1 m by 1 m.',\n  '[CMK] cm2 - square centimetre: The square centimetre (cm2) is a unit of area equivalent to a square measuring 1 cm by 1 cm, 10^-4 m2.',\n  '[KMK] km2 - square kilometre: The square kilometre (km2) is a unit of area equivalent to a square measuring 1 km by 1 km, 10^6 m2.',\n  '[HAR] ha - hectare: The hectare (ha) is a unit of area equivalent to 10 000 square metres, 10^4 m2.',\n  '',\n  'VOLUME',\n  '[CMQ] cm3 - cubic centimetre: The cubic centimetre (cm3) is a unit of volume equivalent to a cube of 1 cm by 1 cm by 1 cm, 10^-6 m3.',\n  '[MLT] ml - millilitre: The millilitre (ml) is a unit of fluid volume equivalent to one thousandth of a litre, 10^-6 m3.',\n  '[LTR] l - litre: The litre (l) is a unit of volume equal to one thousandth of a cubic metre, 10^-3 m3, or 1000 cubic centimetres.',\n  '[HLT] hl - hectolitre: The hectolitre (hl) is a unit of fluid volume equivalent to 100 litres, 10^-1 m3 (0.1 m3).',\n  '',\n  'MASS',\n  '[MC] ug - microgram: The microgram (ug) is a unit of mass equivalent to one millionth of a gram, 10^-6 g, or 10^-9 kg.',\n  '[MGM] mg - milligram: The milligram (mg) is a unit of mass equivalent to one thousandth of a gramme, 10^-3 g (0.001 g).',\n  '[GRM] g - gram: The gram (g) is a unit of mass equivalent to one thousandth of the kilogram, 10^-3 kg.',\n  '[KGM] kg - kilogram: The kilogram (kg) is the base unit of mass in the International System of Units.',\n  '[TNE] t - tonne: The (metric) tonne (t) is a unit of mass equivalent to one thousand kilograms, 10^3 kg (1000 kg).',\n  '',\n  'TIME',\n  '[SEC] s - second: The second (s) is the base unit of time in the International System of Units.',\n  '[MIN] min - minute: The minute (min) is a unit of time equivalent to 1/60 of an hour, or 60 seconds.',\n  '[HUR] h - hour: The hour (h) is a unit of time equivalent to 1/24 of a day, 3600 seconds.',\n  '',\n  'TEMPERATURE',\n  '[KEL] K - kelvin: The Kelvin (K) is the base unit of temperature in the International System of Units. An absolute thermodynamic scale with null point at absolute zero, the temperature at which all thermal motion ceases.',\n  '[CEL] degC - degree Celsius: The degree Celsius (degC) is a unit of temperature used by the International System of Units, defined by absolute zero and the triple point of Vienna Standard Mean Ocean Water.',\n  '',\n  'SPEED',\n  '[MTS] m/s - metre per second: The metre per second (m/s) is a unit of speed equivalent to the number of metres covered in one second.',\n  '[KMH] km/h - kilometre per hour: The kilometre per hour (km/h) is a unit of speed equivalent to the number of kilometres covered in one hour.',\n  '',\n  'PRESSURE / FORCE',\n  '[PAL] Pa - pascal: The pascal (Pa) is a derived unit of pressure defined as one newton per square metre, 1 N/m2.',\n  '[BAR] bar - bar: The bar is a non-SI unit of pressure equal to 100 000 Pa, 10^5 Pa, slightly less than average atmospheric pressure at sea level.',\n  '[NEW] N - newton: The newton (N) is a derived unit of force representing the force needed to accelerate one kilogram of mass at one metre per second squared.',\n  '',\n  'ENERGY',\n  '[JOU] J - joule: The joule (J) is a derived unit of energy equivalent to the work done when a force of one newton acts through a distance of one metre.',\n  '[KWH] kWh - kilowatt-hour: The kilowatt-hour (kWh) is a unit of energy equivalent to the energy provided by one thousand watts in one hour.',\n  '[GWH] GWh - gigawatt-hour: The gigawatt-hour (GWh) is a unit of energy equivalent to one million kilowatt-hours.',\n  '[D30] TJ - terajoule: The terajoule (TJ) is a derived unit of energy equivalent to one trillion joules, 10^12 J.',\n  '[TOE] toe - tonne of oil equivalent: The tonne of oil equivalent (toe) is a unit of energy equivalent to the energy released by burning one tonne of crude oil, approximately 42 gigajoules.',\n  '',\n  'POWER',\n  '[WTT] W - watt: The watt (W) is a unit of power defined as one joule per second and used to quantify the rate of energy transfer.',\n  '[KWT] kW - kilowatt: The kilowatt (kW) is a unit of power equivalent to one thousand watts, 10^3 W.',\n  '[MAW] MW - megawatt: The megawatt (MW) is a unit of power equivalent to one million watts, 10^6 W.',\n  '',\n  'FREQUENCY / ELECTRICAL / RADIOACTIVITY / SOUND / LIGHT',\n  '[HTZ] Hz - hertz: The hertz (Hz) is the derived unit of frequency defined as one cycle per second.',\n  '[AMP] A - ampere: The ampere (A) is the base unit of electric current in the International System of Units.',\n  '[VLT] V - volt: The volt (V) is the derived unit for electric potential and electromotive force.',\n  '[BQL] Bq - becquerel: The becquerel (Bq) is a derived unit of radioactivity defined as one nuclear decay per second.',\n  '[2N] dB - decibel: The decibel (dB) is a unit of sound intensity. One decibel is one tenth of one bel.',\n  '[CDL] cd - candela: The candela (cd) is the base unit of luminous intensity in the International System of Units.',\n  '[C34] mol - mole: The mole (mol) is the base unit for amount of substance in the International System of Units.',\n  '',\n  'INFORMATION',\n  '[BIT] b - bit: The bit (b) is a non-SI unit of information used in computing and digital communications, defined as the minimum information for one yes-or-no decision.',\n  '[AD] B - byte: The byte is a unit of information equal to 8 bits.',\n  '[E34] GB - gigabyte: The gigabyte is a unit of information equal to 10^9 bytes.',\n  '',\n  'TRANSPORT / LABOUR / COUNT / MARITIME',\n  '[TKM] tkm - tonne-kilometre: The tonne-kilometre (tkm) is a unit for calculating freight traffic, representing the transport of one tonne of goods over one kilometre.',\n  '[LH] LH - labour hour: The labour hour is a unit of time defining the number of labour hours.',\n  '[3C] man-month - manmonth: The manmonth is a unit of count defining the number of months for a person or persons to perform an undertaking.',\n  '[H87] pce - piece: Unit of count defining the number of pieces (a single item, article or exemplar).',\n  '[GTE] GT - gross tonnage: The gross tonnage (GT) is a unit of measurement equivalent to the volume of all enclosed spaces of a ship from keel to funnel measured to the outside of the hull framing.'\n];\n\nconst unitContext = unitLines.join('\\n');\n\nconst systemPrompt = 'You are a metadata classification assistant for EU Publications Office measurement units.\\n\\nBelow is the complete list of 51 measurement units with definitions:\\n\\n' + unitContext + '\\n\\nFor each variable, assign the single most appropriate unit code.\\n- Use every field given for a variable together: variable_name, variable_label, variable_description, variable_source_question, variable_datatype, variable_format, variable_measure, variable_value_labels (at most the first 15 value/label pairs; variable_value_labels_total is the full count) and variable_missing_values. A missing field means it is unknown.\\n- Prefer the conventional unit for the scientific domain (e.g. precipitation -> MMT, temperature -> CEL, wind speed -> MTS).\\n- Return \"\" if no unit applies (dimensionless ratios, identifiers, categorical codes).';\n\nconst chunks = [];\nfor (let i = 0; i < variables.length; i += chunkSize) {\n  chunks.push(variables.slice(i, i + chunkSize));\n}\n\nreturn chunks.map(chunk => ({\n  json: {\n    systemPrompt,\n    userMessage: JSON.stringify(chunk, null, 2)\n  }\n}));\n"
+      }
+    },
+    {
+      "id": "node-llm-chain",
+      "name": "Basic LLM Chain",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "onError": "continueRegularOutput",
+      "position": [
+        720,
+        304
+      ],
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.userMessage }}",
+        "hasOutputParser": true,
+        "messages": {
+          "messageValues": [
+            {
+              "message": "={{ $json.systemPrompt }}"
+            }
+          ]
+        },
+        "batching": {
+          "batchSize": 3,
+          "delayBetweenBatches": 500
+        }
+      }
+    },
+    {
+      "id": "4a3d09f3-bbb9-4751-a413-30776180524a",
+      "name": "Structured Output Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        864,
+        512
+      ],
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"results\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"variable_name\": { \"type\": \"string\" },\n          \"unit_of_measure\": {\n            \"type\": \"string\",\n            \"enum\": [\"2N\",\"3C\",\"AD\",\"AMP\",\"BAR\",\"BIT\",\"BQL\",\"C34\",\"C45\",\"CDL\",\"CEL\",\"CMK\",\"CMQ\",\"CMT\",\"D30\",\"E34\",\"GRM\",\"GTE\",\"GWH\",\"H87\",\"HAR\",\"HLT\",\"HTZ\",\"HUR\",\"JOU\",\"KEL\",\"KGM\",\"KMH\",\"KMK\",\"KTM\",\"KWH\",\"KWT\",\"LH\",\"LTR\",\"MAW\",\"MC\",\"MGM\",\"MIN\",\"MLT\",\"MMT\",\"MTK\",\"MTR\",\"MTS\",\"NEW\",\"PAL\",\"SEC\",\"TKM\",\"TNE\",\"TOE\",\"VLT\",\"WTT\",\"\"]\n          }\n        },\n        \"required\": [\"variable_name\", \"unit_of_measure\"]\n      }\n    }\n  },\n  \"required\": [\"results\"]\n}",
+        "autoFix": true
+      }
+    },
+    {
+      "id": "node-merge-results",
+      "name": "Merge Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        992,
+        304
+      ],
+      "parameters": {
+        "jsCode": "// Collect per-chunk results and expand unit codes to full URIs.\n// \"Basic LLM Chain\" runs with onError: continueRegularOutput, so a chunk whose\n// LLM call or output parsing failed arrives here with no `output`. Emit a record\n// for it instead of throwing -- one bad chunk must not take down the whole response.\nconst BASE_URI = \"http://publications.europa.eu/resource/authority/measurement-unit/\";\n\nconst results = [];\nlet ok = 0;\nlet failed = 0;\n\nfor (const item of $input.all()) {\n  const j = item.json || {};\n  const chunkResults = j.output && Array.isArray(j.output.results) ? j.output.results : null;\n\n  if (chunkResults) {\n    for (const r of chunkResults) {\n      results.push({\n        ...r,\n        status: 'ok',\n        unit_of_measure: r.unit_of_measure ? BASE_URI + r.unit_of_measure : '',\n      });\n      ok++;\n    }\n    continue;\n  }\n\n  // userMessage is JSON.stringify(chunk), so the variable names are recoverable.\n  let names = [];\n  try {\n    const chunk = JSON.parse(j.userMessage || '[]');\n    names = Array.isArray(chunk) ? chunk.map((v) => v.variable_name || '') : [];\n  } catch (e) { /* leave empty */ }\n\n  const err = j.error;\n  const message = (err && (err.message || err.description)) ||\n    'LLM chain produced no parsable output';\n\n  if (names.length === 0) names = [''];\n  for (const name of names) {\n    results.push({ variable_name: name, unit_of_measure: '', status: 'failed', error: message });\n    failed++;\n  }\n}\n\nreturn [{ json: { results, ok, failed, total: results.length } }];"
+      }
+    },
+    {
+      "id": "node-respond",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1248,
+        304
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "d717bf04-1b91-40bd-9870-e9f266626bc1",
+      "name": "Azure OpenAI Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAzureOpenAi",
+      "typeVersion": 1,
+      "position": [
+        608,
+        512
+      ],
+      "parameters": {
+        "model": "gpt-5.6-terra",
+        "options": {}
+      },
+      "credentials": {
+        "azureOpenAiApi": {
+          "id": "KKIwbsVKQUA5Kqyu",
+          "name": "Azure Open AI Modansa Terra"
+        }
+      }
+    },
+    {
+      "id": "4293e116-899e-467a-9c0a-ef49fef97004",
+      "name": "When Executed by Another Workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -272,
+        112
+      ],
+      "parameters": {
+        "inputSource": "workflowInputs",
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "variables",
+              "type": "array"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "4e308797-1573-4950-acd5-34ef9f87cf09",
+      "name": "Normalize Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -48,
+        208
+      ],
+      "parameters": {
+        "jsCode": "// Normalize Input -- shared by every variable-enrichment workflow.\n// Contract: schemas/variable_input.py (VariableInput). Generated by\n// `python schemas/variable_input.py --node <task>`; edit the template, not the node.\n// FIELDS is the subset of VariableInput this task's LLM sees (TASK_FIELDS[\"unit\"]).\nconst FIELDS = [\"variable_label\", \"variable_description\", \"variable_source_question\", \"variable_datatype\", \"variable_format\", \"variable_measure\", \"variable_value_labels\", \"variable_value_labels_total\", \"variable_missing_values\"];\nconst MAX_VALUE_LABELS = 15;\nconst LEGACY = { label: 'variable_label', description: 'variable_description', source_question: 'variable_source_question' };\n\n// Webhook puts the payload under body; the Execute Workflow Trigger does not.\nconst input = $input.first().json;\nconst variables = input.body ? input.body.variables : input.variables;\n\nconst fail = (error) => [{ json: { valid: false, error } }];\nif (!Array.isArray(variables) || variables.length === 0) {\n  return fail('Expected a non-empty \"variables\" array of VariableInput objects.');\n}\n\nconst isEmpty = (v) => v === null || v === undefined || v === '' || (Array.isArray(v) && v.length === 0);\nconst out = [];\n\nfor (const [i, v] of variables.entries()) {\n  if (!v || typeof v !== 'object' || Array.isArray(v)) return fail(`variables[${i}] is not an object.`);\n  if (typeof v.variable_name !== 'string' || !v.variable_name) return fail(`variables[${i}] is missing variable_name.`);\n\n  const legacy = Object.keys(LEGACY).filter((k) => k in v);\n  if (legacy.length) {\n    const hint = legacy.map((k) => `${k} -> ${LEGACY[k]}`).join(', ');\n    return fail(`variables[${i}] (${v.variable_name}) uses legacy keys; rename ${hint}.`);\n  }\n\n  const labels = (Array.isArray(v.variable_value_labels) ? v.variable_value_labels : [])\n    .filter((l) => l && l.value !== undefined && l.label !== undefined)\n    .map((l) => ({ value: String(l.value), label: String(l.label) }));\n  const full = {\n    ...v,\n    variable_value_labels: labels.slice(0, MAX_VALUE_LABELS),\n    variable_value_labels_total: labels.length ? (v.variable_value_labels_total ?? labels.length) : null,\n  };\n\n  const item = { variable_name: v.variable_name };\n  for (const f of FIELDS) {\n    if (!isEmpty(full[f])) item[f] = full[f];\n  }\n  out.push(item);\n}\n\nreturn [{ json: { valid: true, variables: out } }];\n"
+      }
+    },
+    {
+      "id": "3e72a341-734b-47f8-a260-26943312c481",
+      "name": "Input Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        176,
+        208
+      ],
+      "parameters": {
+        "options": {},
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "valid-check",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "086cc23b-cb69-489d-8917-ae07958621d6",
+      "name": "Respond Invalid Input",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        432,
+        16
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: false, error: $json.error }) }}",
+        "options": {
+          "responseCode": 400
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Split into Chunks": {
+      "main": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structured Output Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Basic LLM Chain": {
+      "main": [
+        [
+          {
+            "node": "Merge Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Results": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Azure OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "ai_languageModel",
+            "index": 0
+          },
+          {
+            "node": "Structured Output Parser",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalize Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Normalize Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Input": {
+      "main": [
+        [
+          {
+            "node": "Input Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Input Valid?": {
+      "main": [
+        [
+          {
+            "node": "Split into Chunks",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Invalid Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": true,
+    "binaryMode": "separate"
+  },
+  "pinData": {},
+  "active": true,
+  "versionId": "92e8175b-fe12-484e-bed4-1bc8e57b4876",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "id": "olMUw2NjOPWUaWSv",
+  "tags": []
+}

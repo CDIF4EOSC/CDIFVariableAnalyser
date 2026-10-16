@@ -1,0 +1,359 @@
+{
+  "name": "metadata-elsst-kb-loader",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "node-kb-trigger",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        208,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "method": "DELETE",
+        "url": "https://cglbzmfvedmowxfmjsgb.supabase.co/rest/v1/ELSST",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "id",
+              "value": "gte.00000000-0000-0000-0000-000000000000"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node-kb-clear",
+      "name": "Clear ELSST Table",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        432,
+        304
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "sDt7dagUac0vDxh1",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "blob",
+        "operation": "get",
+        "container": {
+          "__rl": true,
+          "value": "data",
+          "mode": "list",
+          "cachedResultName": "data"
+        },
+        "blob": {
+          "__rl": true,
+          "value": "sogreen/skos-ontologies/ELSST_R6.jsonld",
+          "mode": "list",
+          "cachedResultName": "sogreen/skos-ontologies/ELSST_R6.jsonld"
+        },
+        "options": {},
+        "requestOptions": {}
+      },
+      "id": "node-kb-download",
+      "name": "Download ELSST from Azure",
+      "type": "n8n-nodes-base.azureStorage",
+      "typeVersion": 1,
+      "position": [
+        656,
+        304
+      ],
+      "credentials": {
+        "azureStorageSharedKeyApi": {
+          "id": "asJDBghsPVJIq3j5",
+          "name": "Azure Storage account n8nbenjamin"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "fromJson",
+        "options": {}
+      },
+      "id": "node-kb-extract-json",
+      "name": "Extract JSON from Binary",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        880,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const SKOS_CONCEPT  = 'http://www.w3.org/2004/02/skos/core#Concept';\nconst SKOS_PREF     = 'http://www.w3.org/2004/02/skos/core#prefLabel';\nconst SKOS_ALT      = 'http://www.w3.org/2004/02/skos/core#altLabel';\nconst SKOS_DEF      = 'http://www.w3.org/2004/02/skos/core#definition';\nconst SKOS_BROADER  = 'http://www.w3.org/2004/02/skos/core#broader';\nconst SKOS_NARROWER = 'http://www.w3.org/2004/02/skos/core#narrower';\nconst SKOS_RELATED  = 'http://www.w3.org/2004/02/skos/core#related';\nconst MAX_CHARS = 900;\n\nconst raw = $input.first().json;\nlet graph;\nif (raw.data?.[0]?.['@graph'])   graph = raw.data[0]['@graph'];\nelse if (Array.isArray(raw))      graph = raw[0]?.['@graph'];\nelse if (raw['@graph'])           graph = raw['@graph'];\nelse if (raw['0']?.['@graph'])    graph = raw['0']['@graph'];\n\nif (!graph) {\n  const keys = Object.keys(raw).slice(0, 20);\n  throw new Error(`No @graph found. Keys: ${keys.join(', ')} | Sample: ${JSON.stringify(raw).substring(0, 400)}`);\n}\n\nconst conceptMap = new Map();\nconst childrenMap = new Map();\n\nfor (const node of graph) {\n  const types = node['@type'] || [];\n  if (!types.includes(SKOS_CONCEPT)) continue;\n\n  const uri = node['@id'];\n  const enLabel = (node[SKOS_PREF] || []).find(l => l['@language'] === 'en');\n  const prefLabel = enLabel ? enLabel['@value'] : null;\n  if (!prefLabel) continue;\n\n  const enAltLabels = (node[SKOS_ALT] || []).filter(l => l['@language'] === 'en').map(l => l['@value']);\n\n  const enDef = (node[SKOS_DEF] || []).find(l => l['@language'] === 'en');\n  const definition = enDef\n    ? enDef['@value'].replace(/[\\n\\r]+/g, ' ').replace(/\\s+/g, ' ').substring(0, MAX_CHARS)\n    : '';\n\n  const broaderUris  = (node[SKOS_BROADER]  || []).map(r => r['@id']).filter(Boolean);\n  const relatedUris  = (node[SKOS_RELATED]  || []).map(r => r['@id']).filter(Boolean);\n  const narrowerUris = (node[SKOS_NARROWER] || []).map(r => r['@id']).filter(Boolean);\n\n  if (narrowerUris.length > 0) childrenMap.set(uri, narrowerUris);\n  conceptMap.set(uri, { prefLabel, enAltLabels, definition, broaderUris, relatedUris });\n}\n\nconst levelMap = new Map();\nconst queue = [];\nfor (const [uri, info] of conceptMap) {\n  if (info.broaderUris.length === 0) {\n    levelMap.set(uri, 1);\n    queue.push(uri);\n  }\n}\nwhile (queue.length > 0) {\n  const cur = queue.shift();\n  const curLevel = levelMap.get(cur);\n  for (const childUri of (childrenMap.get(cur) || [])) {\n    if (!levelMap.has(childUri)) {\n      levelMap.set(childUri, curLevel + 1);\n      queue.push(childUri);\n    }\n  }\n}\n\nconst labelMap = {};\nfor (const [uri, info] of conceptMap) labelMap[uri] = info.prefLabel;\n\nconst results = [];\nfor (const [uri, info] of conceptMap) {\n  const { prefLabel, enAltLabels, definition, broaderUris, relatedUris } = info;\n  const level = levelMap.get(uri) || null;\n  const broaderLabels = broaderUris.map(u => labelMap[u]).filter(Boolean);\n\n  let content = `Label: ${prefLabel}`;\n  if (broaderLabels.length > 0) content += `\\nBroader: ${broaderLabels.join(', ')}`;\n  if (definition) content += `\\nDefinition: ${definition}`;\n  if (enAltLabels.length > 0) content += `\\nEntry terms: ${enAltLabels.join(', ')}`;\n\n  results.push({\n    json: {\n      pageContent: content,\n      metadata: { uri, pref_label: prefLabel, alt_labels: enAltLabels, definition, level, related_uris: relatedUris }\n    }\n  });\n}\n\nreturn results;\n"
+      },
+      "id": "node-kb-parse-skos",
+      "name": "Parse SKOS to Documents",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1104,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "insert",
+        "tableName": {
+          "mode": "id",
+          "value": "ELSST"
+        },
+        "options": {
+          "queryName": "match_elsst"
+        }
+      },
+      "id": "node-kb-vector-store",
+      "name": "Supabase Vector Store",
+      "type": "@n8n/n8n-nodes-langchain.vectorStoreSupabase",
+      "typeVersion": 1.3,
+      "position": [
+        1552,
+        304
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "sDt7dagUac0vDxh1",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsonMode": "expressionData",
+        "jsonData": "={{ $json.pageContent }}",
+        "options": {
+          "metadata": {
+            "metadataValues": [
+              {
+                "name": "uri",
+                "value": "={{ $json.metadata.uri }}"
+              },
+              {
+                "name": "pref_label",
+                "value": "={{ $json.metadata.pref_label }}"
+              },
+              {
+                "name": "alt_labels",
+                "value": "={{ $json.metadata.alt_labels }}"
+              },
+              {
+                "name": "definition",
+                "value": "={{ $json.metadata.definition }}"
+              },
+              {
+                "name": "level",
+                "value": "={{ $json.metadata.level }}"
+              },
+              {
+                "name": "related_uris",
+                "value": "={{ $json.metadata.related_uris }}"
+              }
+            ]
+          }
+        }
+      },
+      "id": "node-kb-data-loader",
+      "name": "Default Data Loader",
+      "type": "@n8n/n8n-nodes-langchain.documentDefaultDataLoader",
+      "typeVersion": 1.1,
+      "position": [
+        1696,
+        528
+      ]
+    },
+    {
+      "parameters": {
+        "model": "text-embedding-3-small",
+        "options": {}
+      },
+      "id": "node-kb-embeddings",
+      "name": "Azure OpenAI Embeddings",
+      "type": "@n8n/n8n-nodes-langchain.embeddingsAzureOpenAi",
+      "typeVersion": 1,
+      "position": [
+        1456,
+        544
+      ],
+      "credentials": {
+        "azureOpenAiApi": {
+          "id": "oYhaYmffnygzafNO",
+          "name": "Azure text embedding 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chunkSize": 100000,
+        "options": {}
+      },
+      "id": "node-kb-no-split",
+      "name": "No Split",
+      "type": "@n8n/n8n-nodes-langchain.textSplitterRecursiveCharacterTextSplitter",
+      "typeVersion": 1,
+      "position": [
+        1696,
+        736
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "level-condition",
+              "leftValue": "={{ $json.metadata.level }}",
+              "rightValue": 10,
+              "operator": {
+                "type": "number",
+                "operation": "lte"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-kb-filter",
+      "name": "Filter by Level",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [
+        1328,
+        304
+      ]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Clear ELSST Table",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clear ELSST Table": {
+      "main": [
+        [
+          {
+            "node": "Download ELSST from Azure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download ELSST from Azure": {
+      "main": [
+        [
+          {
+            "node": "Extract JSON from Binary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract JSON from Binary": {
+      "main": [
+        [
+          {
+            "node": "Parse SKOS to Documents",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Default Data Loader": {
+      "ai_document": [
+        [
+          {
+            "node": "Supabase Vector Store",
+            "type": "ai_document",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Azure OpenAI Embeddings": {
+      "ai_embedding": [
+        [
+          {
+            "node": "Supabase Vector Store",
+            "type": "ai_embedding",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "No Split": {
+      "ai_textSplitter": [
+        [
+          {
+            "node": "Default Data Loader",
+            "type": "ai_textSplitter",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse SKOS to Documents": {
+      "main": [
+        [
+          {
+            "node": "Filter by Level",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter by Level": {
+      "main": [
+        [
+          {
+            "node": "Supabase Vector Store",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false,
+    "binaryMode": "separate"
+  },
+  "versionId": "51578547-499f-4bdb-9ebe-b8208b4c1e63",
+  "meta": null,
+  "id": "yliNxcIcjuqrxHiJ",
+  "tags": []
+}

@@ -1,0 +1,651 @@
+{
+  "name": "metadata-elsst-enrichment-rag-v2",
+  "nodes": [
+    {
+      "id": "node-v2-webhook",
+      "name": "Webhook",
+      "webhookId": "e2f3a4b5-c6d7-8901-efgh-567890123456",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -272,
+        304
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "metadata-elsst-enrichment-rag-v2",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "EG1cw8ySdLvD9zTw",
+          "name": "Metadata Enrichment Webhook Header Auth"
+        }
+      }
+    },
+    {
+      "id": "node-v2-split",
+      "name": "Split into Items",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        304
+      ],
+      "parameters": {
+        "jsCode": "// Already validated and projected onto this task's fields by \"Normalize Input\".\nconst variables = $input.first().json.variables;\nreturn variables.map(v => ({ json: v }));"
+      }
+    },
+    {
+      "id": "node-v2-loop",
+      "name": "Loop Over Items",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        688,
+        304
+      ],
+      "parameters": {
+        "options": {}
+      }
+    },
+    {
+      "id": "node-v2-build-query",
+      "name": "Build Query",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        944,
+        160
+      ],
+      "parameters": {
+        "jsCode": "const item = $input.first().json;\nconst name = item.variable_name || '';\nconst label = item.variable_label || '';\nlet questionText = (item.variable_source_question || item.variable_description || '').trim();\n\nquestionText = questionText\n  .replace(/\\[MONTH,?\\s*YEAR\\]/gi, '')\n  .replace(/please (choose|use|select) (an )?(answer from )?this card\\.?/gi, '')\n  .replace(/using (the same |this )?card[,.]/gi, '')\n  .replace(/\\s{2,}/g, ' ')\n  .trim();\n\nlet queryText = `Thesaurus concept for variable \"${name}\": \"${label}\"`;\nif (questionText) {\n  queryText += `, asking: \"${questionText}\"`;\n}\n\nreturn [{ json: { queryText, variable: item } }];"
+      }
+    },
+    {
+      "id": "node-v2-retrieve",
+      "name": "Retrieve ELSST",
+      "type": "@n8n/n8n-nodes-langchain.vectorStoreSupabase",
+      "typeVersion": 1.3,
+      "retryOnFail": true,
+      "maxTries": 2,
+      "onError": "continueRegularOutput",
+      "position": [
+        1184,
+        160
+      ],
+      "parameters": {
+        "mode": "load",
+        "tableName": {
+          "mode": "id",
+          "value": "ELSST"
+        },
+        "prompt": "={{ $json.queryText }}",
+        "topK": 15,
+        "options": {
+          "queryName": "match_elsst"
+        }
+      },
+      "credentials": {
+        "supabaseApi": {
+          "id": "sDt7dagUac0vDxh1",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "id": "node-v2-embeddings",
+      "name": "Azure OpenAI Embeddings",
+      "type": "@n8n/n8n-nodes-langchain.embeddingsAzureOpenAi",
+      "typeVersion": 1,
+      "position": [
+        1184,
+        384
+      ],
+      "parameters": {
+        "model": "text-embedding-3-small",
+        "options": {}
+      },
+      "credentials": {
+        "azureOpenAiApi": {
+          "id": "oYhaYmffnygzafNO",
+          "name": "Azure text embedding 3"
+        }
+      }
+    },
+    {
+      "id": "node-v2-collect-uris",
+      "name": "Collect Related URIs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "onError": "continueRegularOutput",
+      "position": [
+        1424,
+        160
+      ],
+      "parameters": {
+        "jsCode": "// Collect skos:related neighbour URIs for the second-stage Supabase lookup.\n//\n// \"Retrieve ELSST\" runs with onError: continueRegularOutput, so on a Supabase\n// failure it passes its INPUT item through untouched ({queryText, variable})\n// instead of emitting documents. Detect that here so the failure is reported\n// downstream instead of silently degrading into an empty concept list.\nconst items = $input.all();\n\nconst docs = [];\nfor (const item of items) {\n  const j = item.json || {};\n  const doc = j.document || j;\n  if (doc.pageContent !== undefined || doc.metadata !== undefined) {\n    docs.push(j);\n  }\n}\n\nconst retrievalFailed = docs.length === 0;\n\nlet retrievalError = '';\nif (retrievalFailed) {\n  const errItem = items.find(i => i.json && i.json.error);\n  const err = errItem ? errItem.json.error : null;\n  retrievalError = (err && (err.message || err.description)) ||\n    'Supabase vector search returned no documents';\n}\n\nconst metaOf = (doc) => (doc.document || {}).metadata || doc.metadata || {};\n\nconst primaryUris = new Set();\nfor (const doc of docs) {\n  const meta = metaOf(doc);\n  if (meta.uri) primaryUris.add(meta.uri);\n}\n\nconst relatedUriSet = new Set();\nfor (const doc of docs) {\n  let uriList = metaOf(doc).related_uris || [];\n  if (typeof uriList === 'string') {\n    try { uriList = JSON.parse(uriList); } catch (e) { uriList = []; }\n  }\n  for (const u of uriList) {\n    if (u && !primaryUris.has(u)) relatedUriSet.add(u);\n  }\n}\n\n// Cap the list so the generated GET stays well under any URL length limit;\n// topK=15 can yield a lot of neighbours.\nconst relatedUris = [...relatedUriSet].slice(0, 40);\n\n// Quote and percent-encode the values. encodeURIComponent would also escape the\n// slashes inside the URIs, so keep those literal to match the form PostgREST was\n// verified against.\nconst enc = (s) => encodeURIComponent(s).replace(/%2F/g, '/');\nconst quote = (v) => '\"' + String(v).replace(/[\"\\\\]/g, '') + '\"';\nconst lookupFilter = relatedUris.length\n  ? 'metadata->>uri=' + enc('in.(' + relatedUris.map(quote).join(',') + ')')\n  : 'limit=1';\n\nreturn [{ json: { docs, relatedUris, lookupFilter, retrievalFailed, retrievalError } }];"
+      }
+    },
+    {
+      "id": "node-v2-fetch-related",
+      "name": "Fetch Related Concepts",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "retryOnFail": true,
+      "maxTries": 2,
+      "onError": "continueRegularOutput",
+      "position": [
+        1840,
+        112
+      ],
+      "parameters": {
+        "url": "={{ 'https://cglbzmfvedmowxfmjsgb.supabase.co/rest/v1/ELSST?select=content,metadata&' + $json.lookupFilter }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "options": {}
+      },
+      "credentials": {
+        "supabaseApi": {
+          "id": "sDt7dagUac0vDxh1",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "id": "node-v2-build-prompt",
+      "name": "Build RAG Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "onError": "continueRegularOutput",
+      "position": [
+        2064,
+        112
+      ],
+      "parameters": {
+        "jsCode": "// Build the RAG prompt from the primary similarity hits plus their skos:related\n// neighbours.\nconst collectData = $('Collect Related URIs').first().json;\nconst primaryDocs = collectData.docs || [];\nconst expectedRelatedUris = new Set(collectData.relatedUris || []);\n\n// Keep only rows that were actually requested. The upstream query falls back to\n// limit=1 when there is nothing to look up, purely to keep the pipeline alive --\n// drop that row here.\nconst relatedRows = [];\nfor (const item of $input.all()) {\n  const body = item.json;\n  const rows = Array.isArray(body)\n    ? body\n    : (body && (body.content !== undefined || body.metadata !== undefined) ? [body] : []);\n  for (const row of rows) {\n    if (expectedRelatedUris.has((row.metadata || {}).uri || '')) relatedRows.push(row);\n  }\n}\n\nconst variable = $('Build Query').first().json.variable || {};\n\n// Primary candidates (full pageContent, no truncation)\n// uri -> pref_label for every concept actually rendered into the prompt below.\n// \"Validate ELSST URIs\" uses this as its allow-list, so it is built from the\n// same two loops that render the text -- never reconstructed separately.\nconst allowedConcepts = {};\n\nconst primaryParts = primaryDocs.map((doc, i) => {\n  const meta = (doc.document || {}).metadata || doc.metadata || {};\n  const label = meta.pref_label || '(unknown)';\n  const uri = meta.uri || '';\n  const content = (doc.document || {}).pageContent || doc.pageContent || '';\n  if (uri) allowedConcepts[uri] = meta.pref_label || '';\n  return `[${i+1}] ${label}\\nURI: ${uri}\\n${content}`;\n});\n\nconst relatedParts = relatedRows\n  .map(row => {\n    const meta = row.metadata || {};\n    const label = meta.pref_label || '';\n    const uri = meta.uri || '';\n    const def = meta.definition || '';\n    if (!label || !uri) return null;\n    allowedConcepts[uri] = label;\n    return `- ${label} (${uri})${def ? ': ' + def.substring(0, 300) : ''}`;\n  })\n  .filter(Boolean);\n\nconst primaryBlock = primaryParts.join('\\n\\n---\\n\\n');\nconst relatedBlock = relatedParts.length > 0\n  ? '\\n\\n=== Related Concepts (thesaurus neighbours via skos:related) ===\\n\\n' + relatedParts.join('\\n')\n  : '';\n\nconst systemPrompt =\n  'You are a metadata classification assistant for the European Language Social Science Thesaurus (ELSST).\\n\\n' +\n  '=== Primary Candidates (retrieved by semantic similarity) ===\\n\\n' +\n  primaryBlock +\n  relatedBlock +\n  '\\n\\n' +\n  'Your task:\\n' +\n  '- The variable is given as JSON: variable_name, variable_label, variable_description, variable_source_question, variable_datatype, variable_format, variable_measure, variable_value_labels (at most the first 15 value/label pairs; variable_value_labels_total is the full count) and variable_missing_values. A missing field means it is unknown. Use them together to judge its subject matter.\\n' +\n  '- Select 1 to 3 ELSST concepts that best describe the SUBJECT MATTER of the variable.\\n' +\n  '- Each selected concept must appear in one of the lists above. Copy uri and pref_label exactly as shown.\\n' +\n  '- Prefer the most specific concept that accurately fits the variable.\\n' +\n  '- If the lists contain several narrow siblings sharing one broader concept, and the variable is about the general case rather than any single sibling, select that broader concept instead -- but only if it appears in the lists above.\\n' +\n  '- A concept naming the unit of observation (HOUSEHOLDS, INDIVIDUALS, FAMILIES) describes WHO is measured, not WHAT is measured. Select it only when the variable is genuinely about that unit (e.g. household size), not when it merely records whose attribute was captured.\\n' +\n  '- Exclude methodological concepts (data collection frequency, measurement scales, survey methods, data quality, etc.).\\n' +\n  '- Return an empty array only if the variable is clearly unrelated to all listed concepts (e.g., a technical ID or administrative code field).';\n\nconst userMessage = JSON.stringify(variable);\nreturn [{ json: { systemPrompt, userMessage, allowedConcepts } }];"
+      }
+    },
+    {
+      "id": "node-v2-llm-chain",
+      "name": "Basic LLM Chain",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "retryOnFail": true,
+      "maxTries": 2,
+      "onError": "continueRegularOutput",
+      "position": [
+        2288,
+        112
+      ],
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.userMessage }}",
+        "hasOutputParser": true,
+        "messages": {
+          "messageValues": [
+            {
+              "message": "={{ $json.systemPrompt }}"
+            }
+          ]
+        },
+        "batching": {}
+      }
+    },
+    {
+      "id": "node-v2-output-parser",
+      "name": "Structured Output Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        2528,
+        384
+      ],
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\"type\":\"object\",\"properties\":{\"results\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"variable_name\":{\"type\":\"string\"},\"elsst_concepts\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"uri\":{\"type\":\"string\"},\"pref_label\":{\"type\":\"string\"}},\"required\":[\"uri\",\"pref_label\"]}}},\"required\":[\"variable_name\",\"elsst_concepts\"]}}},\"required\":[\"results\"]}"
+      }
+    },
+    {
+      "id": "node-v2-merge",
+      "name": "Merge Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        944,
+        464
+      ],
+      "parameters": {
+        "jsCode": "// Collect per-variable results from every loop iteration and tag each one, so the\n// caller can tell \"no matching concept\" apart from \"the lookup was broken\".\n// Both \"Basic LLM Chain\" and the retrieval-failure branch feed back into\n// \"Loop Over Items\", so this sees a mix of LLM output and failure records.\nconst results = [];\nlet ok = 0;\nlet failed = 0;\nconst droppedUris = [];\n\nfor (const item of $input.all()) {\n  const j = item.json || {};\n  const output = j.output;\n\n  // \"Validate ELSST URIs\" records concepts the model invented. Surfacing the\n  // count makes the hallucination rate measurable per run instead of guessed.\n  if (Array.isArray(j.dropped_uris)) droppedUris.push(...j.dropped_uris);\n\n  if (output && Array.isArray(output.results)) {\n    for (const r of output.results) {\n      const entry = { status: 'ok', ...r };\n      results.push(entry);\n      if (entry.status === 'ok') ok++; else failed++;\n    }\n    continue;\n  }\n\n  // No parsable output: \"Basic LLM Chain\" also runs with onError:\n  // continueRegularOutput, so on failure it passes its input through and the\n  // variable would otherwise vanish from the response entirely.\n  // userMessage is JSON.stringify(variable), so the name is still recoverable.\n  let variableName = '';\n  try {\n    variableName = JSON.parse(j.userMessage || '{}').variable_name || '';\n  } catch (e) { /* leave blank */ }\n\n  const err = j.error;\n  results.push({\n    variable_name: variableName,\n    status: 'llm_failed',\n    error: (err && (err.message || err.description)) ||\n      'LLM chain produced no parsable output',\n    elsst_concepts: [],\n  });\n  failed++;\n}\n\nreturn [{ json: { results, ok, failed, total: results.length, dropped: droppedUris.length, dropped_uris: droppedUris } }];"
+      }
+    },
+    {
+      "id": "node-v2-respond",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1184,
+        608
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "7f3a1c92-4d6b-4e18-9a25-8c0f1b3d7e64",
+      "name": "Retrieval OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1616,
+        160
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "retrieval-ok",
+              "leftValue": "={{ $json.retrievalFailed }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "false",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "2b9e5d41-8a37-4c60-b1f2-6d84e097a3c5",
+      "name": "Build Failure Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1840,
+        336
+      ],
+      "parameters": {
+        "jsCode": "// Retrieval failed upstream - emit a record in the same shape \"Basic LLM Chain\"\n// produces, so \"Merge Results\" can report it per item without burning an LLM call.\nconst j = $input.first().json || {};\nconst variable = $('Build Query').first().json.variable || {};\n\nreturn [{\n  json: {\n    output: {\n      results: [{\n        variable_name: variable.variable_name || '',\n        status: 'retrieval_failed',\n        error: j.retrievalError || 'Supabase retrieval failed',\n        elsst_concepts: [],\n      }],\n    },\n  },\n}];"
+      }
+    },
+    {
+      "id": "1000310d-1041-417c-9898-d63ab1994a50",
+      "name": "Azure OpenAI Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAzureOpenAi",
+      "typeVersion": 1,
+      "position": [
+        2176,
+        320
+      ],
+      "parameters": {
+        "model": "gpt-5.6-terra",
+        "options": {}
+      },
+      "credentials": {
+        "azureOpenAiApi": {
+          "id": "KKIwbsVKQUA5Kqyu",
+          "name": "Azure Open AI Modansa Terra"
+        }
+      }
+    },
+    {
+      "id": "643faa4e-7493-42e0-a1c4-9d79feebd898",
+      "name": "Validate ELSST URIs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2512,
+        112
+      ],
+      "parameters": {
+        "jsCode": "// Reject any ELSST concept the model returned that was not in the candidate set\n// rendered into its prompt. The output schema types uri/pref_label as free\n// strings, so this is the only thing stopping a plausible but fabricated URI\n// from reaching the caller -- the prompt instruction alone is not a constraint.\nconst item = $input.first().json || {};\n\n// \"Basic LLM Chain\" runs with onError: continueRegularOutput -- on failure it\n// passes its input straight through with no `output`. Leave those untouched so\n// \"Merge Results\" still reports them as llm_failed.\nif (!item.output || !Array.isArray(item.output.results)) {\n  return [{ json: item }];\n}\n\nconst allowed = ($('Build RAG Prompt').first().json || {}).allowedConcepts || {};\nconst dropped = [];\n\nconst results = item.output.results.map((r) => {\n  const concepts = Array.isArray(r.elsst_concepts) ? r.elsst_concepts : [];\n  const kept = [];\n  const seen = new Set();\n\n  for (const c of concepts) {\n    const uri = (c && c.uri) || '';\n    if (!Object.prototype.hasOwnProperty.call(allowed, uri)) {\n      dropped.push({\n        variable_name: r.variable_name || '',\n        uri,\n        pref_label: (c && c.pref_label) || '',\n      });\n      continue;\n    }\n    if (seen.has(uri)) continue;\n    seen.add(uri);\n    // Use the retrieved label, never the model's copy of it.\n    kept.push({ uri, pref_label: allowed[uri] });\n  }\n\n  return { ...r, elsst_concepts: kept };\n});\n\nreturn [{ json: { output: { results }, dropped_uris: dropped } }];"
+      }
+    },
+    {
+      "id": "2bd0686c-80da-4e64-b636-e51caff86399",
+      "name": "When Executed by Another Workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -272,
+        112
+      ],
+      "parameters": {
+        "inputSource": "workflowInputs",
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "variables",
+              "type": "array"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "e6e52c4e-dda4-49c0-8bdb-a3422c0e2d2b",
+      "name": "Normalize Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -48,
+        208
+      ],
+      "parameters": {
+        "jsCode": "// Normalize Input -- shared by every variable-enrichment workflow.\n// Contract: schemas/variable_input.py (VariableInput). Generated by\n// `python schemas/variable_input.py --node <task>`; edit the template, not the node.\n// FIELDS is the subset of VariableInput this task's LLM sees (TASK_FIELDS[\"elsst\"]).\nconst FIELDS = [\"variable_label\", \"variable_description\", \"variable_source_question\", \"variable_datatype\", \"variable_format\", \"variable_measure\", \"variable_value_labels\", \"variable_value_labels_total\", \"variable_missing_values\"];\nconst MAX_VALUE_LABELS = 15;\nconst LEGACY = { label: 'variable_label', description: 'variable_description', source_question: 'variable_source_question' };\n\n// Webhook puts the payload under body; the Execute Workflow Trigger does not.\nconst input = $input.first().json;\nconst variables = input.body ? input.body.variables : input.variables;\n\nconst fail = (error) => [{ json: { valid: false, error } }];\nif (!Array.isArray(variables) || variables.length === 0) {\n  return fail('Expected a non-empty \"variables\" array of VariableInput objects.');\n}\n\nconst isEmpty = (v) => v === null || v === undefined || v === '' || (Array.isArray(v) && v.length === 0);\nconst out = [];\n\nfor (const [i, v] of variables.entries()) {\n  if (!v || typeof v !== 'object' || Array.isArray(v)) return fail(`variables[${i}] is not an object.`);\n  if (typeof v.variable_name !== 'string' || !v.variable_name) return fail(`variables[${i}] is missing variable_name.`);\n\n  const legacy = Object.keys(LEGACY).filter((k) => k in v);\n  if (legacy.length) {\n    const hint = legacy.map((k) => `${k} -> ${LEGACY[k]}`).join(', ');\n    return fail(`variables[${i}] (${v.variable_name}) uses legacy keys; rename ${hint}.`);\n  }\n\n  const labels = (Array.isArray(v.variable_value_labels) ? v.variable_value_labels : [])\n    .filter((l) => l && l.value !== undefined && l.label !== undefined)\n    .map((l) => ({ value: String(l.value), label: String(l.label) }));\n  const full = {\n    ...v,\n    variable_value_labels: labels.slice(0, MAX_VALUE_LABELS),\n    variable_value_labels_total: labels.length ? (v.variable_value_labels_total ?? labels.length) : null,\n  };\n\n  const item = { variable_name: v.variable_name };\n  for (const f of FIELDS) {\n    if (!isEmpty(full[f])) item[f] = full[f];\n  }\n  out.push(item);\n}\n\nreturn [{ json: { valid: true, variables: out } }];\n"
+      }
+    },
+    {
+      "id": "9a0c1e46-0586-4f1b-b5d5-4540e259d785",
+      "name": "Input Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        176,
+        208
+      ],
+      "parameters": {
+        "options": {},
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "valid-check",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "cb095c5b-e39a-404e-a04b-ffd1befd72f0",
+      "name": "Respond Invalid Input",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        432,
+        16
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: false, error: $json.error }) }}",
+        "options": {
+          "responseCode": 400
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Split into Items": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items": {
+      "main": [
+        [
+          {
+            "node": "Merge Results",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Query": {
+      "main": [
+        [
+          {
+            "node": "Retrieve ELSST",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Azure OpenAI Embeddings": {
+      "ai_embedding": [
+        [
+          {
+            "node": "Retrieve ELSST",
+            "type": "ai_embedding",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Retrieve ELSST": {
+      "main": [
+        [
+          {
+            "node": "Collect Related URIs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Related Concepts": {
+      "main": [
+        [
+          {
+            "node": "Build RAG Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build RAG Prompt": {
+      "main": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structured Output Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Results": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Collect Related URIs": {
+      "main": [
+        [
+          {
+            "node": "Retrieval OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Retrieval OK?": {
+      "main": [
+        [
+          {
+            "node": "Fetch Related Concepts",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Failure Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Failure Result": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Azure OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Basic LLM Chain": {
+      "main": [
+        [
+          {
+            "node": "Validate ELSST URIs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate ELSST URIs": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalize Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Normalize Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Input": {
+      "main": [
+        [
+          {
+            "node": "Input Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Input Valid?": {
+      "main": [
+        [
+          {
+            "node": "Split into Items",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Invalid Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false,
+    "binaryMode": "separate"
+  },
+  "pinData": {},
+  "active": true,
+  "versionId": "d3c5d504-4d65-403f-9698-9fc43fa8ac6f",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "id": "MNWSYxhZ6I3kpgWd",
+  "tags": []
+}
