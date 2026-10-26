@@ -49,10 +49,11 @@ export const api = {
   async output(
     id: string,
     body: OutputBody,
+    format: OutputFormat = "ddicdi",
   ): Promise<JsonLdDoc> {
     const headers = new Headers({ "Content-Type": "application/json" });
     if (apiKey) headers.set("X-API-Key", apiKey);
-    const res = await fetch(`/api/files/${id}/output`, { method: "POST", headers, body: JSON.stringify(body) });
+    const res = await fetch(`/api/files/${id}/output?format=${format}`, { method: "POST", headers, body: JSON.stringify(body) });
     if (!res.ok) throw new ApiError(res.status, (await res.json().catch(() => ({}))).detail ?? res.statusText);
     return (await res.json()) as JsonLdDoc;
   },

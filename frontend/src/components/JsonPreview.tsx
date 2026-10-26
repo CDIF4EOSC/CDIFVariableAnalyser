@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ElementView } from "../diff";
-import { countByType, idsForVariable } from "../diff";
-import type { ChangeKind, JsonLdDoc } from "../types";
+import { countByType, graphKey, idsForVariable } from "../diff";
+import type { ChangeKind, JsonLdDoc, OutputFormat } from "../types";
 import { IconCopy, IconSearch, IconX } from "./Icons";
 
 interface Props {
   doc: JsonLdDoc | null;
+  format: OutputFormat;
   views: ElementView[];
   status: "idle" | "busy" | "error";
   elapsedMs: number | null;
@@ -139,7 +140,7 @@ export function JsonPreview(p: Props) {
       if (v.kind === "changed") changed++;
       else if (v.kind === "added") added++;
       else if (v.kind === "removed") removed++;
-      if (v.kind !== "removed") objects++;
+      if (v.kind !== "removed" && !v.key) objects++;
     }
     return { changed, added, removed, objects };
   }, [p.views]);
@@ -165,35 +166,49 @@ export function JsonPreview(p: Props) {
     };
 
     push("{");
-    const ctx = JSON.stringify({ "@context": p.doc["@context"] }, null, 4).split("\n").slice(1, -1);
-    for (const l of ctx) push(l + (l === ctx[ctx.length - 1] ? "," : ""));
-
-    // one graph: everything the generator emits is DDI-CDI
-    const group = p.views;
+    // The views are in document order: top-level properties as blocks, the graph
+    // (DDICDIModels, or a CDIF dataset's variables) as one run of elements.
+    const graph = graphKey(p.doc);
+    const nTop = p.views.filter((v) => v.key).length + (p.views.some((v) => !v.key) ? 1 : 0);
+    let topDone = 0;
     let firstHighlight: number | null = null;
-    if (group.length) {
-      push(`    "DDICDIModels": [`);
-      group.forEach((v, idx) => {
-        const matchesType = !typeFilter || v.type === typeFilter;
-        const matchesVar = !varIds || varIds.has(v.id);
-        const c = cachedLines(v);
+    for (let idx = 0; idx < p.views.length; idx++) {
+      const v = p.views[idx];
+      if (v.key) {
+        topDone += 1;
+        const block = JSON.stringify({ [v.key]: v.element }, null, 4).split("\n").slice(1, -1);
+        if (v.kind !== "same" && !varIds && firstHighlight === null) firstHighlight = out.length;
+        block.forEach((l, i) => push(i === block.length - 1 && topDone < nTop ? l + "," : l, v.kind, v.id));
+        continue;
+      }
+      // the graph: from here to the next top-level property
+      let end = idx;
+      while (end < p.views.length && !p.views[end].key) end++;
+      const group = p.views.slice(idx, end);
+      idx = end - 1;
+      topDone += 1;
+      push(`    ${JSON.stringify(graph)}: [`);
+      group.forEach((g, gi) => {
+        const matchesType = !typeFilter || g.type === typeFilter;
+        const matchesVar = !varIds || varIds.has(g.id);
+        const c = cachedLines(g);
         const matchesQuery = !q || c.lower.includes(q);
         const visible = matchesType && matchesVar && matchesQuery && shown < cap;
         if (!visible) {
           hidden += 1;
           skipRun += 1;
-          if (v.kind !== "removed") n += c.lines.length;
+          if (g.kind !== "removed") n += c.lines.length;
           return;
         }
         flushSkip();
         shown += 1;
-        const highlight = varIds ? varIds.has(v.id) : v.kind === "changed" || v.kind === "added";
+        const highlight = varIds ? varIds.has(g.id) : g.kind === "changed" || g.kind === "added";
         if (highlight && firstHighlight === null) firstHighlight = out.length;
-        const last = idx === group.length - 1;
-        c.lines.forEach((l, i) => push(!last && i === c.lines.length - 1 ? l + "," : l, v.kind, v.id));
+        const last = gi === group.length - 1;
+        c.lines.forEach((l, i) => push(!last && i === c.lines.length - 1 ? l + "," : l, g.kind, g.id));
       });
       flushSkip();
-      push("    ]");
+      push(topDone < nTop ? "    ]," : "    ]");
     }
     push("}");
     return { lines: out, hidden, totalLines: n - 1, capped: hidden > 0 && shown >= cap, firstHighlight };
@@ -215,7 +230,7 @@ export function JsonPreview(p: Props) {
   return (
     <section className="out" aria-label="Output preview">
       <div className="out-head">
-        <span className="out-title">DDI-CDI · JSON-LD</span>
+        <span className="out-title">{p.format === "cdif" ? "CDIF · JSON-LD" : "DDI-CDI · JSON-LD"}</span>
         <span className="grow" />
         <span className={`live ${p.status === "busy" ? "busy" : p.status === "error" ? "err" : ""}`}>
           <span className="dot" />
@@ -274,7 +289,7 @@ export function JsonPreview(p: Props) {
               ) : undefined}
             />
           ) : (
-            <div className="out-empty">{p.status === "busy" ? "Generating the document…" : "The DDI-CDI document appears here as soon as a file is loaded."}</div>
+            <div className="out-empty">{p.status === "busy" ? "Generating the document…" : `The ${p.format === "cdif" ? "CDIF" : "DDI-CDI"} document appears here as soon as a file is loaded.`}</div>
           )}
       </div>
 

@@ -91,6 +91,13 @@ h1, h2, h3 { font-family: var(--font-display); margin: 0; }
 .right { flex: 1 1 44%; min-width: 0; display: flex; animation: slide-in 0.18s ease-out; }
 @keyframes slide-in { from { opacity: 0; transform: translateX(16px); } to { opacity: 1; transform: none; } }
 .hbtn.on { background: #263349; color: #fff; }
+
+/* DDI-CDI | CDIF: picks what the output panel previews and the download writes */
+.fmt-switch { display: inline-flex; height: 34px; padding: 3px; gap: 2px; border-radius: 8px; border: 1px solid var(--dark-3); background: var(--dark-2); }
+.fmt-switch button { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; padding: 0 10px; border: none; border-radius: 6px; background: transparent; color: #94a3b8; font-size: 13px; font-weight: 500; }
+.fmt-switch button:hover { color: #e2e8f0; }
+.fmt-switch button.on { background: var(--dark-3); color: #fff; font-weight: 600; }
+.fmt-switch button.on.open { background: #334155; }
 .out-dot { width: 8px; height: 8px; border-radius: 50%; background: #64748b; display: inline-block; }
 .out-dot.idle { background: var(--green); }
 .out-dot.busy { background: var(--amber); }

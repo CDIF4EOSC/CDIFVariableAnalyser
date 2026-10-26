@@ -97,7 +97,8 @@ export type OutputFormat = "ddicdi" | "cdif";
 
 export interface JsonLdDoc {
   "@context": unknown;
-  DDICDIModels: Element[];
+  /** DDI-CDI only; a CDIF document lists its variables under schema:variableMeasured. */
+  DDICDIModels?: Element[];
   [key: string]: unknown;
 }
 

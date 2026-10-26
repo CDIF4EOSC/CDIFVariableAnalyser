@@ -30,6 +30,8 @@ const DEFAULT_OPTIONS: Options = {
   apiKey: localStorage.getItem("ddi.apiKey") ?? "",
 };
 
+const FORMAT_LABEL: Record<OutputFormat, string> = { ddicdi: "DDI-CDI", cdif: "CDIF" };
+
 // The live preview never streams the whole file; the download does.
 const PREVIEW_MAX_ROWS = 50;
 
@@ -67,6 +69,8 @@ export default function App() {
 
   const [drawer, setDrawer] = useState(false);
   const [outputOpen, setOutputOpen] = useState(false);
+  // What the output panel previews and the download writes.
+  const [outFormat, setOutFormat] = useState<OutputFormat>("ddicdi");
   const [view, setView] = useState<View>("meta");
   const [optionsOpen, setOptionsOpen] = useState(false);
   const [apiDocs, setApiDocs] = useState(false);
@@ -167,7 +171,7 @@ export default function App() {
           statistics_weight: statsWeight,
           statistics_include: options.includeStatistics ? options.statistics : undefined,
         };
-        const next = await api.output(fileId, body);
+        const next = await api.output(fileId, body, outFormat);
         if (seq !== regenSeq.current) return;
         setViews(diffDocs(docRef.current, next));
         docRef.current = next;
@@ -182,12 +186,28 @@ export default function App() {
         setOutError(e instanceof Error ? e.message : String(e));
       }
     },
-    [previewRows, options.includeStatistics, options.statistics, statsWeight, sessionLost],
+    [previewRows, options.includeStatistics, options.statistics, statsWeight, sessionLost, outFormat],
   );
 
   useEffect(() => {
     if (info) void regenerate(info.file_id);
   }, [info?.file_id, previewRows, options.includeStatistics, statsInclude, statsWeight]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Another format is another document: nothing in it is "changed" against the last one.
+  useEffect(() => {
+    docRef.current = null;
+    setDoc(null);
+    setViews([]);
+    if (info) void regenerate(info.file_id);
+  }, [outFormat]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const pickFormat = (f: OutputFormat) => {
+    if (f === outFormat) setOutputOpen((o) => !o);
+    else {
+      setOutFormat(f);
+      setOutputOpen(true);
+    }
+  };
 
   // -- data page ------------------------------------------------------------------
   const loadPage = useCallback(async (fileId: string, size: number, off: number) => {
@@ -618,7 +638,7 @@ export default function App() {
     toast(`Accepted ${steps.length} suggestion${steps.length === 1 ? "" : "s"} (one undo step)`);
   };
 
-  const download = async (format: OutputFormat = "ddicdi") => {
+  const download = async (format: OutputFormat = outFormat) => {
     if (!info) return;
     setDownloading(format);
     try {
@@ -705,14 +725,29 @@ export default function App() {
           <button type="button" className="hbtn" onClick={() => setOptionsOpen((o) => !o)} aria-expanded={optionsOpen}><IconSettings /> Options</button>
           {optionsOpen && <OptionsPopover options={options} totalRows={info.number_rows} statsWeight={statsWeight} onChange={setOptions} onClose={() => setOptionsOpen(false)} />}
         </div>
-        <button type="button" className={`hbtn ${outputOpen ? "on" : ""}`} aria-pressed={outputOpen} title={outputOpen ? "Hide the DDI-CDI output panel" : "Show the DDI-CDI output panel"} onClick={() => setOutputOpen((o) => !o)}>
-          <span className={`out-dot ${outStatus}`} /> CDI
-        </button>
+        <div className="fmt-switch" role="radiogroup" aria-label="Output format">
+          {(["ddicdi", "cdif"] as const).map((f) => (
+            <button
+              key={f}
+              type="button"
+              role="radio"
+              aria-checked={outFormat === f}
+              className={outFormat === f ? (outputOpen ? "on open" : "on") : ""}
+              title={
+                outFormat === f
+                  ? `${outputOpen ? "Hide" : "Show"} the ${FORMAT_LABEL[f]} output panel`
+                  : f === "cdif"
+                    ? "Preview and download CDIF, converted from DDI-CDI (metadata only: no data rows or statistics)"
+                    : "Preview and download DDI-CDI"
+              }
+              onClick={() => pickFormat(f)}
+            >
+              {outFormat === f && <span className={`out-dot ${outStatus}`} />} {FORMAT_LABEL[f]}
+            </button>
+          ))}
+        </div>
         <button type="button" className="hbtn primary" disabled={downloading !== null} onClick={() => void download()}>
-          <IconDownload /> {downloading === "ddicdi" ? "Preparing…" : `Download ${baseName}_DDICDI.jsonld`}
-        </button>
-        <button type="button" className="hbtn" disabled={downloading !== null} title="Download the metadata as CDIF JSON-LD, converted from DDI-CDI (no data rows or statistics)" onClick={() => void download("cdif")}>
-          <IconDownload /> {downloading === "cdif" ? "Preparing…" : "CDIF"}
+          <IconDownload /> {downloading ? "Preparing…" : `Download ${baseName}${outFormat === "cdif" ? "_CDIF.json" : "_DDICDI.jsonld"}`}
         </button>
         <button type="button" className="hbtn" title="API documentation" onClick={() => setApiDocs(true)}><IconCode /> API</button>
       </header>
@@ -794,6 +829,7 @@ export default function App() {
         <div className="right">
           <JsonPreview
             doc={doc}
+            format={outFormat}
             views={views}
             status={outStatus}
             elapsedMs={elapsed}

@@ -137,7 +137,7 @@ def info() -> dict:
             "GET /api/files/{id}": "metadata again",
             "GET /api/files/{id}/preview?rows=N": "first N rows",
             "POST /api/files/{id}/generate?format=ddicdi|cdif": "generate DDI-CDI (or CDIF) JSON-LD as a download",
-            "POST /api/files/{id}/output": "regenerate for the editor preview (JSON-LD as JSON)",
+            "POST /api/files/{id}/output?format=ddicdi|cdif": "regenerate for the editor preview (JSON-LD as JSON)",
             "PUT /api/files/{id}/roles": "replace all variable roles",
             "POST /api/files/{id}/variables": "add a variable (new column)",
             "PATCH /api/files/{id}/variables/{name}": "edit label, format, type, measure, value labels, missing, role, functions, name, unit of measure, concepts",
@@ -216,11 +216,17 @@ def generate(
 
 
 @router.post("/files/{file_id}/output", dependencies=[Depends(require_api_key)])
-def output(file_id: str, req: OutputRequest, store: UploadStore = Depends(get_store)) -> Response:
+def output(
+    file_id: str,
+    req: OutputRequest,
+    format: OutputFormat = Query("ddicdi", description="ddicdi (default) or cdif"),
+    store: UploadStore = Depends(get_store),
+) -> Response:
     """Editor preview: the current document with the stored roles, not as a download."""
     dataset = _load(store, file_id)
     editing.ensure_roles(dataset.meta)
-    return Response(content=_jsonld(dataset, req), media_type="application/ld+json")
+    content = _cdif(dataset) if format == "cdif" else _jsonld(dataset, req)
+    return Response(content=content, media_type="application/ld+json")
 
 
 # -- editing -----------------------------------------------------------------------------

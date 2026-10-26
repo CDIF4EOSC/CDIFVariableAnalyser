@@ -58,3 +58,11 @@ def test_generate_cdif_download(client):  # noqa: F811
     doc = json.loads(r.content)
     assert doc["@type"] == ["schema:Dataset"] and len(doc["schema:variableMeasured"]) == 13
     assert client.post(f"/api/files/{fid}/generate", params={"format": "xml"}, json={}).status_code == 422
+
+
+def test_output_preview_in_cdif(client):  # noqa: F811
+    fid = _upload(client).json()["file_id"]
+    r = client.post(f"/api/files/{fid}/output", params={"format": "cdif"}, json={"max_rows": 5})
+    assert r.status_code == 200, r.text
+    doc = r.json()
+    assert "DDICDIModels" not in doc and len(doc["schema:variableMeasured"]) == 13
