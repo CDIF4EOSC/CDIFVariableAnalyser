@@ -92,6 +92,9 @@ export interface Element {
   [key: string]: unknown;
 }
 
+/** What the download writes: DDI-CDI JSON-LD, or the same document converted to CDIF. */
+export type OutputFormat = "ddicdi" | "cdif";
+
 export interface JsonLdDoc {
   "@context": unknown;
   DDICDIModels: Element[];

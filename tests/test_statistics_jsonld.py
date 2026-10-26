@@ -103,7 +103,7 @@ def test_values_without_a_label_get_their_own_category(doc):
 def test_categories_are_notated(doc):
     ppltrst = next(e for e in _by_type(doc, "Category") if e["@id"] == "#category-ppltrst-0")
     assert ppltrst["name"] == {"@type": "ObjectName", "name": "0"}
-    assert ppltrst["displayLabel"]["locationVariant"]["entryValue"] == "You can't be too careful"
+    assert ppltrst["displayLabel"]["languageSpecificString"]["content"] == "You can't be too careful"
 
     notation = next(e for e in _by_type(doc, "Notation") if e["@id"] == "#notation-ppltrst-0")
     assert notation["content"] == {"@type": "TypedString", "content": "0"}
@@ -130,7 +130,7 @@ def test_sentinel_categories_are_kept(qsv, tmp_path, work_dir):
     ds.meta.var("a").value_labels = {"1": "yes", "2": "no", "99": "refusal"}
     doc = build_document(ds, options=GenerateOptions(max_rows=0, include_statistics=True))
     refusal = next(e for e in _by_type(doc, "Category") if e["@id"] == "#category-a-99")
-    assert refusal["displayLabel"]["locationVariant"]["entryValue"] == "refusal"
+    assert refusal["displayLabel"]["languageSpecificString"]["content"] == "refusal"
     count = next(e for e in _by_type(doc, "CategoryStatistics") if e["@id"] == "#categoryStatistics-a-99-frequency")
     assert count["statistic"][0]["content"] == 1
 

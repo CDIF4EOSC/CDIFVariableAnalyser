@@ -33,6 +33,15 @@ def notation_id(variable: str, code: str) -> str:
     return f"#notation-{variable}-{part(code)}"
 
 
+def display_label(text: str) -> Element:
+    """A ``LabelForDisplay``. The text is its ``languageSpecificString``; ``locationVariant``
+    only names a locale variant ("US"), never the label itself."""
+    return {
+        "@type": "LabelForDisplay",
+        "languageSpecificString": {"@type": "LanguageString", "content": text},
+    }
+
+
 def category(variable: str, code: str, label: str | None) -> Element:
     """The meaning of a code: its name is the code, its display label the value label."""
     el: Element = {
@@ -41,10 +50,7 @@ def category(variable: str, code: str, label: str | None) -> Element:
         "name": {"@type": "ObjectName", "name": code},
     }
     if label:
-        el["displayLabel"] = {
-            "@type": "LabelForDisplay",
-            "locationVariant": {"@type": "ControlledVocabularyEntry", "entryValue": label},
-        }
+        el["displayLabel"] = display_label(label)
     return el
 
 

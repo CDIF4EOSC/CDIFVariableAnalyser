@@ -30,6 +30,7 @@ export function ApiDocsModal({ onClose, apiInfo }: { onClose: () => void; apiInf
           </table>
           <p className="muted" style={{ margin: 0, fontSize: 12 }}>
             Output is DDI-CDI JSON-LD (<span className="mono">application/ld+json</span>), downloaded as <span className="mono">&lt;file&gt;_DDICDI.jsonld</span>.
+            With <span className="mono">?format=cdif</span> (or <span className="mono">-F output_format=cdif</span> on <span className="mono">/api/convert</span>) the same metadata is converted to CDIF and downloaded as <span className="mono">&lt;file&gt;_CDIF.json</span>.
           </p>
           <p className="muted" style={{ margin: 0, fontSize: 12 }}>
             Authentication: {String(apiInfo?.authentication ?? "none")}. Set <span className="mono">DDI_API_KEY</span> on the server and enter the key under Options to enable it.

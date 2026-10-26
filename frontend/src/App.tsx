@@ -12,7 +12,7 @@ import { OptionsPopover } from "./components/OptionsPopover";
 import { StatisticsPanel } from "./components/StatisticsPanel";
 import { Toasts, type Toast } from "./components/Toasts";
 import { UploadScreen } from "./components/UploadScreen";
-import type { Concept, EnrichKind, FileInfo, JsonLdDoc, Options, PreviewPage, Statistics, Suggestion } from "./types";
+import type { Concept, EnrichKind, FileInfo, JsonLdDoc, Options, OutputFormat, PreviewPage, Statistics, Suggestion } from "./types";
 import { ALL_STAT_NAMES, ENRICH_KINDS, sameFunctions } from "./types";
 
 interface Edit {
@@ -74,7 +74,7 @@ export default function App() {
   const [health, setHealth] = useState<{ version: string; qsv: string | null } | null>(null);
   const [uploadBusy, setUploadBusy] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
-  const [downloading, setDownloading] = useState(false);
+  const [downloading, setDownloading] = useState<OutputFormat | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
 
   const docRef = useRef<JsonLdDoc | null>(null);
@@ -618,9 +618,9 @@ export default function App() {
     toast(`Accepted ${steps.length} suggestion${steps.length === 1 ? "" : "s"} (one undo step)`);
   };
 
-  const download = async () => {
+  const download = async (format: OutputFormat = "ddicdi") => {
     if (!info) return;
-    setDownloading(true);
+    setDownloading(format);
     try {
       const { blob, filename } = await api.download(info.file_id, {
         max_rows: maxRows,
@@ -628,7 +628,7 @@ export default function App() {
         include_statistics: options.includeStatistics,
         statistics_weight: statsWeight,
         statistics_include: options.includeStatistics ? options.statistics : undefined,
-      });
+      }, format);
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
@@ -639,7 +639,7 @@ export default function App() {
     } catch (e) {
       fail(e);
     } finally {
-      setDownloading(false);
+      setDownloading(null);
     }
   };
 
@@ -708,8 +708,11 @@ export default function App() {
         <button type="button" className={`hbtn ${outputOpen ? "on" : ""}`} aria-pressed={outputOpen} title={outputOpen ? "Hide the DDI-CDI output panel" : "Show the DDI-CDI output panel"} onClick={() => setOutputOpen((o) => !o)}>
           <span className={`out-dot ${outStatus}`} /> CDI
         </button>
-        <button type="button" className="hbtn primary" disabled={downloading} onClick={() => void download()}>
-          <IconDownload /> {downloading ? "Preparing…" : `Download ${baseName}_DDICDI.jsonld`}
+        <button type="button" className="hbtn primary" disabled={downloading !== null} onClick={() => void download()}>
+          <IconDownload /> {downloading === "ddicdi" ? "Preparing…" : `Download ${baseName}_DDICDI.jsonld`}
+        </button>
+        <button type="button" className="hbtn" disabled={downloading !== null} title="Download the metadata as CDIF JSON-LD, converted from DDI-CDI (no data rows or statistics)" onClick={() => void download("cdif")}>
+          <IconDownload /> {downloading === "cdif" ? "Preparing…" : "CDIF"}
         </button>
         <button type="button" className="hbtn" title="API documentation" onClick={() => setApiDocs(true)}><IconCode /> API</button>
       </header>

@@ -35,7 +35,7 @@ def _by_id(doc, id_):
 
 
 def _label(element):
-    return element["displayLabel"]["locationVariant"]["entryValue"]
+    return element["displayLabel"]["languageSpecificString"]["content"]
 
 
 def test_patch_variable_updates_output(client, fid):

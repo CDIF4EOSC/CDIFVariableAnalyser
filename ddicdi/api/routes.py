@@ -10,7 +10,8 @@ from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query
 from pydantic import ValidationError
 
 from .. import __version__, editing, enrich, stats
-from ..cdi.jsonld import generate_complete_json_ld
+from ..cdi.jsonld import GenerateOptions, build_document, generate_complete_json_ld
+from ..cdif import convert_document
 from ..cdi.statistics import STATISTIC_NAMES
 from ..config import settings
 from ..data import Dataset
@@ -38,6 +39,9 @@ from .store import UploadNotFound, UploadStore
 
 router = APIRouter(prefix="/api")
 
+# DDI-CDI JSON-LD, or the same document converted to CDIF.
+OutputFormat = Literal["ddicdi", "cdif"]
+
 
 def get_store(request: Request) -> UploadStore:
     return request.app.state.store
@@ -48,12 +52,12 @@ def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
         raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key header")
 
 
-def _download(jsonld: str, filename: str) -> Response:
+def _download(jsonld: str, filename: str, suffix: str = "_DDICDI.jsonld") -> Response:
     base = Path(filename).stem
     return Response(
         content=jsonld.encode("utf-8"),
         media_type="application/ld+json",
-        headers={"Content-Disposition": f'attachment; filename="{base}_DDICDI.jsonld"'},
+        headers={"Content-Disposition": f'attachment; filename="{base}{suffix}"'},
     )
 
 
@@ -70,7 +74,7 @@ def _save(store: UploadStore, file_id: str, dataset: Dataset) -> None:
     editing.touch(dataset.csv_path.parent)
 
 
-def _generate(store: UploadStore, file_id: str, req: GenerateRequest) -> Response:
+def _generate(store: UploadStore, file_id: str, req: GenerateRequest, fmt: OutputFormat = "ddicdi") -> Response:
     dataset = _load(store, file_id)
     if req.roles:
         try:
@@ -79,6 +83,8 @@ def _generate(store: UploadStore, file_id: str, req: GenerateRequest) -> Respons
             raise HTTPException(status_code=400, detail=str(exc))
     else:
         editing.ensure_roles(dataset.meta)
+    if fmt == "cdif":
+        return _download(_cdif(dataset), dataset.meta.datafile, "_CDIF.json")
     return _download(_jsonld(dataset, req), dataset.meta.datafile)
 
 
@@ -95,6 +101,13 @@ def _jsonld(dataset: Dataset, req: GenerateRequest | OutputRequest) -> str:
         statistics_weight=req.statistics_weight,
         statistics_include=req.statistics_include,
     )
+
+
+def _cdif(dataset: Dataset) -> str:
+    """The document converted to CDIF. CDIF is metadata only, so no rows or statistics go in."""
+    doc = build_document(dataset, options=GenerateOptions(max_rows=0))
+    cdif = convert_document(doc, Path(dataset.meta.datafile).stem)
+    return json.dumps(cdif, indent=2, ensure_ascii=False)
 
 
 # -- info -----------------------------------------------------------------------------
@@ -116,13 +129,14 @@ def info() -> dict:
         "version": __version__,
         "supported_extensions": sorted(SUPPORTED_EXTENSIONS),
         "output_format": "application/ld+json",
+        "output_formats": {"ddicdi": "DDI-CDI 1.1beta JSON-LD (default)", "cdif": "CDIF JSON-LD, converted from DDI-CDI"},
         "roles": list(ROLE_NAMES),
         "statistics": list(STATISTIC_NAMES),
         "endpoints": {
             "POST /api/files": "upload a file; returns metadata and preview",
             "GET /api/files/{id}": "metadata again",
             "GET /api/files/{id}/preview?rows=N": "first N rows",
-            "POST /api/files/{id}/generate": "generate DDI-CDI JSON-LD as a download",
+            "POST /api/files/{id}/generate?format=ddicdi|cdif": "generate DDI-CDI (or CDIF) JSON-LD as a download",
             "POST /api/files/{id}/output": "regenerate for the editor preview (JSON-LD as JSON)",
             "PUT /api/files/{id}/roles": "replace all variable roles",
             "POST /api/files/{id}/variables": "add a variable (new column)",
@@ -135,7 +149,7 @@ def info() -> dict:
             "POST /api/files/{id}/rows": "append a row",
             "DELETE /api/files/{id}/rows/{index}": "remove a row",
             "DELETE /api/files/{id}": "remove upload",
-            "POST /api/convert": "one-shot upload + generate (compatible with the original API)",
+            "POST /api/convert": "one-shot upload + generate (compatible with the original API); output_format=cdif for CDIF",
         },
         "authentication": "X-API-Key header" if settings.api_key else "none",
         "ai_enrichment": bool(settings.n8n_bearer_key),
@@ -192,8 +206,13 @@ def preview(
 
 
 @router.post("/files/{file_id}/generate", dependencies=[Depends(require_api_key)])
-def generate(file_id: str, req: GenerateRequest, store: UploadStore = Depends(get_store)) -> Response:
-    return _generate(store, file_id, req)
+def generate(
+    file_id: str,
+    req: GenerateRequest,
+    format: OutputFormat = Query("ddicdi", description="ddicdi (default) or cdif"),
+    store: UploadStore = Depends(get_store),
+) -> Response:
+    return _generate(store, file_id, req, format)
 
 
 @router.post("/files/{file_id}/output", dependencies=[Depends(require_api_key)])
@@ -399,6 +418,7 @@ async def convert_once(
     include_statistics: str = Form("false"),
     statistics_weight: str | None = Form(None),
     statistics_include: str | None = Form(None, description="Comma separated; omitted = every statistic"),
+    output_format: str = Form("ddicdi", description="ddicdi (default) or cdif"),
     store: UploadStore = Depends(get_store),
 ) -> Response:
     roles: dict[str, str] = {}
@@ -407,6 +427,8 @@ async def convert_once(
             roles = json.loads(variable_roles)
         except json.JSONDecodeError as exc:
             raise HTTPException(status_code=400, detail=f"variable_roles is not valid JSON: {exc}")
+    if output_format not in ("ddicdi", "cdif"):
+        raise HTTPException(status_code=400, detail=f"Unknown output_format {output_format!r}; use ddicdi or cdif")
     ext = Path(file.filename or "").suffix.lower()
     if ext not in SUPPORTED_EXTENSIONS:
         raise HTTPException(status_code=400, detail=f"Unsupported file type {ext!r}")
@@ -431,6 +453,6 @@ async def convert_once(
             )
         except ValidationError as exc:
             raise HTTPException(status_code=400, detail=str(exc.errors()[0]["msg"]))
-        return _generate(store, file_id, req)
+        return _generate(store, file_id, req, output_format)  # type: ignore[arg-type]
     finally:
         store.delete(file_id)

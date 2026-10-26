@@ -19,7 +19,7 @@ from typing import Any, Iterable
 from ..data import Dataset
 from ..models import Concept, DatasetMeta, Variable, format_number
 from . import statistics
-from .codes import category, category_id, code_id, code_position_id, notation, notation_id
+from .codes import category, category_id, code_id, code_position_id, display_label, notation, notation_id
 from .typemap import classification_level, map_to_xsd_type
 
 CONTEXT = "https://ddi-cdi.github.io/m2t-ng/DDI-CDI_1-1beta/encoding/json-ld/ddi-cdi.jsonld"
@@ -318,13 +318,7 @@ def generate_InstanceVariable(meta: DatasetMeta, described: Collection[str] = ()
             "@type": "InstanceVariable",
             # the kind of value (double, string, int8 ...); how it is written is the PhysicalMapping's
             "physicalDataType": _cve(var.storage_type),
-            "displayLabel": {
-                "@type": "LabelForDisplay",
-                "locationVariant": {
-                    "@type": "ControlledVocabularyEntry",
-                    "entryValue": var.label if var.label is not None else var.name,
-                },
-            },
+            "displayLabel": display_label(var.label if var.label is not None else var.name),
             "name": {"@type": "ObjectName", "name": var.name},
             "takesSubstantiveValuesFrom_SubstantiveValueDomain": f"#substantiveValueDomain-{var.name}",
         }

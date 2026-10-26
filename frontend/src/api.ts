@@ -1,4 +1,4 @@
-import type { CategoryStats, EnrichKind, EnrichResponse, FileInfo, JsonLdDoc, OutputBody, PreviewPage, Statistics, Variable } from "./types";
+import type { CategoryStats, EnrichKind, EnrichResponse, FileInfo, JsonLdDoc, OutputBody, OutputFormat, PreviewPage, Statistics, Variable } from "./types";
 
 let apiKey = "";
 export function setApiKey(key: string) {
@@ -60,10 +60,11 @@ export const api = {
   async download(
     id: string,
     body: OutputBody,
+    format: OutputFormat = "ddicdi",
   ): Promise<{ blob: Blob; filename: string }> {
     const headers = new Headers({ "Content-Type": "application/json" });
     if (apiKey) headers.set("X-API-Key", apiKey);
-    const res = await fetch(`/api/files/${id}/generate`, { method: "POST", headers, body: JSON.stringify(body) });
+    const res = await fetch(`/api/files/${id}/generate?format=${format}`, { method: "POST", headers, body: JSON.stringify(body) });
     if (!res.ok) throw new ApiError(res.status, (await res.json().catch(() => ({}))).detail ?? res.statusText);
     const cd = res.headers.get("Content-Disposition") ?? "";
     const m = /filename="?([^";]+)"?/.exec(cd);
