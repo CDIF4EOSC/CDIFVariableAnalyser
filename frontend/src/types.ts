@@ -62,25 +62,13 @@ export interface Grant {
   title: string;
 }
 
-/** How the data were collected: the CDIF provenance activity. */
-export interface Methodology {
-  description: string;
-  collection_start: string;
-  collection_end: string;
-  modes: string[]; // DDI ModeOfCollection codes
-  sampling: string; // DDI SamplingProcedure code
-  sampling_description: string;
-  universe: string;
-  instrument: string;
-}
-
 export interface VocabularyTerm {
   code: string;
   label: string;
   uri: string;
 }
 
-export type Vocabularies = Record<"mode_of_collection" | "sampling_procedure" | "contributor_role", VocabularyTerm[]>;
+export type Vocabularies = Record<"contributor_role", VocabularyTerm[]>;
 
 /** Dataset-level description for the CDIF discovery profile; not in the data file. */
 export interface DatasetInfo {
@@ -103,7 +91,6 @@ export interface DatasetInfo {
   temporal_end: string;
   spatial: string[];
   funding: Grant[];
-  methodology: Methodology;
 }
 
 export interface FileInfo {

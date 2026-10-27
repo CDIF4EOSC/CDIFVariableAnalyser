@@ -18,8 +18,15 @@ export function ConceptsEditor({ concepts, onSave, onClose }: Props) {
     const onDoc = (e: MouseEvent) => {
       if (box.current && !box.current.contains(e.target as Node)) onClose();
     };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
     document.addEventListener("mousedown", onDoc);
-    return () => document.removeEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
   }, [onClose]);
 
   const update = (i: number, patch: Partial<Concept>) => {
@@ -40,14 +47,14 @@ export function ConceptsEditor({ concepts, onSave, onClose }: Props) {
   };
 
   return (
-    <div ref={box} className="popover" style={{ top: 36, left: 0, width: 520 }} role="dialog" aria-label="Concepts">
-      <div className="row">
+    <div ref={box} className="popover editor" style={{ top: 34, left: 0, width: 520 }} role="dialog" aria-label="Concepts">
+      <div className="picker-head">
         <h3>Concepts</h3>
-        <span className="muted" style={{ fontSize: 12 }}>ELSST or other concept URIs</span>
+        <span className="sub">ELSST or other concept URIs</span>
         <span className="grow" />
-        <button type="button" className="iconbtn" aria-label="Close" onClick={onClose}><IconX /></button>
+        <button type="button" className="iconbtn" aria-label="Close" onClick={onClose}><IconX size={12} /></button>
       </div>
-      <div className="vl-grid cn-grid" style={{ maxHeight: 300, overflow: "auto", display: "grid" }}>
+      <div className="editor-body vl-grid cn-grid" style={{ maxHeight: 300, overflow: "auto", display: "grid" }}>
         <span className="h">URI</span><span className="h">Label</span><span className="h" />
         {rows.map((r, i) => {
           const u = r.uri.trim();
@@ -72,8 +79,8 @@ export function ConceptsEditor({ concepts, onSave, onClose }: Props) {
           );
         })}
       </div>
-      <div className="row">
-        <span className="muted" style={{ fontSize: 11 }}>One DDI-CDI Concept per entry, linked with uses_Concept. ELSST URIs get an int.cessda.elsst identifier.</span>
+      <div className="picker-foot editor-foot">
+        <span>One DDI-CDI Concept per entry, linked with uses_Concept. ELSST URIs get an int.cessda.elsst identifier.</span>
         <span className="grow" />
         <button type="button" className="btn" onClick={onClose}>Cancel</button>
         <button type="button" className="btn primary" disabled={invalid.size > 0 || dupes.size > 0} onClick={save}>Save</button>

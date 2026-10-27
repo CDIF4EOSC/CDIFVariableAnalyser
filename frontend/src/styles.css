@@ -157,7 +157,7 @@ h1, h2, h3 { font-family: var(--font-display); margin: 0; }
 .th-ai { display: inline-flex; align-items: center; gap: 2px; }
 /* a control with its ✦ button: the control shrinks with the column, the button always stays visible */
 .ai-row { gap: 2px; width: 100%; min-width: 0; }
-.ai-row > select.cell-select, .ai-row > .chip-btn { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ai-row > select.cell-select, .ai-row > .chip-btn, .ai-row > .pick-btn { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .ai-row > select.cell-select { max-width: 150px; }
 .ai-row > select.cell-select.plain { max-width: 170px; }
 .th-ai .iconbtn.ai { width: 20px; height: 20px; font-size: 12px; }
@@ -208,9 +208,10 @@ table.grid.cols td > .cell { max-width: none; }
 table.grid.cols select.cell-select { max-width: 100%; }
 table.grid.cols .ai-row > select.cell-select { max-width: 100%; }
 table.grid.cols .chip-btn { max-width: 100%; }
+/* every cell button fills its column, so the buttons line up row by row */
+table.grid.cols .pick-btn { width: 100%; max-width: 100%; justify-content: space-between; }
 table.grid.cols .chip-btn > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 table.grid.cols .suggest { max-width: 100%; }
-table.grid.cols .fn-tags { flex-wrap: nowrap; overflow: hidden; }
 .col-grip { position: absolute; top: 0; right: 0; width: 9px; height: 100%; cursor: col-resize; z-index: 2; }
 .col-grip::after {
   content: ""; position: absolute; top: 7px; bottom: 7px; right: 4px; width: 1px; background: #d8dbe0; border-radius: 1px;
@@ -237,31 +238,57 @@ select.cell-select {
   appearance: none; background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2.4' stroke-linecap='round'><path d='m6 9 6 6 6-6'/></svg>");
   background-repeat: no-repeat; background-position: right 8px center;
 }
-select.cell-select.role-measure { background-color: var(--accent-soft); color: var(--accent-ink); border-color: #c7d2fe; }
-select.cell-select.role-identifier { background-color: #ecfdf5; color: #047857; border-color: #a7f3d0; }
-select.cell-select.role-attribute { background-color: #fff7ed; color: #c2410c; border-color: #fed7aa; }
-select.cell-select.role-multi { background-color: #f5f3ff; color: #6d28d9; border-color: #ddd6fe; }
 select.cell-select.plain { border-radius: 6px; font-weight: 500; color: var(--ink-2); }
 .val-tag { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 4px; background: #fef3c7; color: #92400e; border: 1px solid #fcd34d; font-family: var(--mono); }
 .val-tag small { font-family: var(--font); font-size: 11px; }
 .hint-label { color: var(--faint); font-family: var(--font); margin-left: 6px; }
-.chip-btn { height: 26px; padding: 0 8px; border-radius: 6px; border: 1px solid #e5e7eb; background: #fff; color: var(--ink-2); font-size: 12px; display: inline-flex; align-items: center; gap: 6px; }
-.chip-btn:hover { background: #f3f4f6; }
 
-/* variable function tags */
-.fn-tags { display: inline-flex; gap: 4px; flex-wrap: wrap; }
-.fn-tag { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 999px; background: #f3f4f6; color: var(--ink-2); white-space: nowrap; }
-.fn-tag.fn-Weight { background: #fef3c7; color: #92400e; }
-.fn-tag.fn-UnitIdentifier { background: #ecfdf5; color: #047857; }
-.fn-tag.fn-GeographicDimension { background: #eff6ff; color: #1d4ed8; }
-.fn-tag.fn-TemporalDimension { background: #f5f3ff; color: #6d28d9; }
-.fn-tag.fn-SamplingDesign { background: #fff7ed; color: #c2410c; }
-.fn-list { display: flex; flex-direction: column; gap: 6px; }
-.fn-opt { display: flex; align-items: flex-start; gap: 10px; padding: 8px 10px; border-radius: 8px; border: 1px solid #e5e7eb; cursor: pointer; }
-.fn-opt.on { border-color: var(--accent-2); background: var(--accent-soft); }
-.fn-opt input { accent-color: var(--accent-2); margin-top: 2px; }
-.fn-opt .name { font-weight: 600; font-size: 13px; }
-.fn-opt .hint { font-size: 11px; color: var(--muted); }
+/* vocabulary cells (type, measure, role, function, unit) share one trigger and one picker; the
+   free-form editors (values, concepts) use the same trigger look */
+.pick-btn, .chip-btn {
+  height: 28px; padding: 0 8px; border-radius: 6px; border: 1px solid #e5e7eb; background: #fff; color: var(--ink-2);
+  font-size: 12px; font-weight: 500; display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%;
+}
+.pick-btn:hover, .chip-btn:hover { background: #f9fafb; border-color: #d1d5db; }
+.pick-btn.open, .pick-btn:focus-visible { border-color: var(--accent-2); box-shadow: 0 0 0 3px var(--accent-ring); outline: none; }
+.pick-btn .pick-val { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.pick-btn .pick-chev { flex-shrink: 0; color: var(--faint); }
+.unit-sym { display: inline-block; min-width: 48px; margin-right: 6px; font-weight: 600; }
+
+/* the picker panel: fixed, so the grid's scroll box does not clip it */
+.picker {
+  position: fixed; z-index: 50; background: #fff; border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.18); display: flex; flex-direction: column; color: var(--ink); overflow: hidden;
+}
+.picker-head { display: flex; align-items: baseline; gap: 8px; padding: 8px 6px 6px 12px; }
+.picker-head h3 { font-size: 13px; font-weight: 600; white-space: nowrap; }
+.picker-head .sub { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.picker-head .iconbtn { width: 22px; height: 22px; align-self: center; }
+.picker-search { display: flex; align-items: center; gap: 6px; margin: 0 8px 6px; padding: 0 8px; height: 30px; border: 1px solid #e5e7eb; border-radius: 6px; color: var(--faint); }
+.picker-search:focus-within { border-color: var(--accent-2); box-shadow: 0 0 0 3px var(--accent-ring); }
+.picker-search input { flex: 1; min-width: 0; border: none; outline: none; background: transparent; color: var(--ink); }
+.picker-list { overflow: auto; padding: 0 4px 4px; outline: none; flex: 1 1 auto; min-height: 0; }
+.picker-opt { display: flex; align-items: flex-start; gap: 10px; padding: 6px 8px; border-radius: 6px; cursor: pointer; }
+.picker-opt.cur { background: #f3f4f6; }
+.picker-opt.on { background: var(--accent-soft); }
+.picker-opt.on.cur { background: #e0e7ff; }
+.picker-opt.locked { cursor: default; }
+.picker-opt .txt { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.picker-opt .name { font-size: 12px; font-weight: 500; line-height: 18px; }
+.picker-opt .hint { font-size: 11px; color: var(--muted); }
+/* one marker for single and multiple choice alike: a check in front of what is chosen */
+.picker-opt .mark { flex-shrink: 0; width: 14px; height: 18px; display: inline-flex; align-items: center; color: var(--accent); }
+.picker-opt.on .name { font-weight: 600; color: var(--accent-ink); }
+.picker-opt.locked .mark { opacity: 0.55; }
+.picker-empty { padding: 10px; font-size: 12px; color: var(--muted); text-align: center; }
+.picker-foot { padding: 7px 12px; font-size: 11px; color: var(--muted); border-top: 1px solid var(--border-soft); background: var(--head); }
+
+/* the free-form editors (value labels, concepts) wear the picker's frame; only they need Save */
+.popover.editor { padding: 0; gap: 0; border-radius: 10px; overflow: hidden; }
+.popover.editor .editor-body { margin: 0 12px 12px; }
+.editor-foot { display: flex; align-items: center; gap: 8px; }
+.editor-foot > span { flex: 1; min-width: 0; }
+.editor-foot .btn { height: 28px; font-size: 12px; flex-shrink: 0; }
 
 /* popover */
 .popover {
@@ -537,4 +564,3 @@ table.grid.sub tbody tr.sentinel .freq-bar { background: var(--amber); opacity: 
 .ds-check p { margin: 14px 0 0; font-size: 11px; color: var(--muted); line-height: 1.45; }
 @media (max-width: 1100px) { .ds-layout { flex-direction: column-reverse; } .ds-check { position: static; flex-basis: auto; width: 100%; } }
 .role-select { height: 32px; padding: 0 8px; border-radius: 8px; border: 1px solid #d1d5db; background: #fff; max-width: 220px; }
-.kw-select { border: none; background: transparent; height: 28px; flex: 1 1 180px; min-width: 160px; color: var(--muted); outline: none; }

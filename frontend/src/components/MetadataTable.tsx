@@ -1,12 +1,12 @@
 import { useMemo, useState } from "react";
 import type { EnrichKind, Suggestion, Variable } from "../types";
-import { MEASURE_OPTIONS, ROLE_OPTIONS, TYPE_OPTIONS, functionLabel, roleLabel, typeHasDecimals } from "../types";
+import { FUNCTION_OPTIONS, MEASURE_OPTIONS, TYPE_OPTIONS, functionLabel, roleLabel, typeHasDecimals } from "../types";
 import { UNIT_OPTIONS, isKnownUnit, unitLabel, unitUri } from "../units";
 import { ColumnHandle, useColumnWidths, type Column } from "./ColumnResize";
 import { ConceptsEditor } from "./ConceptsEditor";
 import { EditableCell } from "./EditableCell";
-import { FunctionsEditor } from "./FunctionsEditor";
 import { IconPlus, IconSearch, IconTrash, IconX } from "./Icons";
+import { Chevron, Picker, type PickOption } from "./Picker";
 import { ValueLabelsEditor } from "./ValueLabelsEditor";
 
 interface Props {
@@ -78,9 +78,39 @@ function Ghost({ text, title, onAccept, onReject }: { text: string; title: strin
   );
 }
 
-function roleClass(role: string): string {
-  if (role.includes(",")) return "role-multi";
-  return `role-${role}`;
+const MEASURE_HINTS: Record<string, string> = {
+  nominal: "Categories without an order",
+  ordinal: "Ordered categories",
+  scale: "Numbers with meaningful distances",
+  unknown: "Not determined",
+};
+const MEASURE_PICKS: PickOption[] = MEASURE_OPTIONS.map((m) => ({ value: m, label: m, text: m, hint: MEASURE_HINTS[m] }));
+
+const ROLE_PICKS: PickOption[] = [
+  { value: "measure", label: "Measure", text: "Measure", hint: "The observed value; the default" },
+  { value: "identifier", label: "Identifier", text: "Identifier", hint: "Joins the PrimaryKey; must be unique across rows" },
+  { value: "attribute", label: "Attribute", text: "Attribute", hint: "Qualifies the measures, e.g. a flag or status" },
+];
+
+const FUNCTION_PICKS: PickOption[] = FUNCTION_OPTIONS.map((f) => ({
+  value: f.name,
+  label: f.label,
+  text: f.label,
+  hint: f.hint,
+}));
+
+const UNIT_PICKS: PickOption[] = [
+  { value: "", label: <span className="faint">none</span>, text: "none" },
+  ...UNIT_OPTIONS.map((u) => ({
+    value: unitUri(u.code),
+    label: <><b className="unit-sym">{u.alt}</b> {u.label}</>,
+    text: `${u.alt} ${u.label} ${u.code}`,
+  })),
+];
+
+function functionPicks(current: string[]): PickOption[] {
+  const extra = current.filter((f) => !FUNCTION_OPTIONS.some((o) => o.name === f));
+  return [...FUNCTION_PICKS, ...extra.map((f) => ({ value: f, label: functionLabel(f), text: functionLabel(f), hint: "Not in the standard vocabulary" }))];
 }
 
 function parseMissing(text: string): { lo: string; hi: string }[] {
@@ -123,7 +153,6 @@ export function MetadataTable({
   const [filter, setFilter] = useState<Filter>("all");
   const [labelsFor, setLabelsFor] = useState<string | null>(null);
   const [conceptsFor, setConceptsFor] = useState<string | null>(null);
-  const [functionsFor, setFunctionsFor] = useState<string | null>(null);
 
   const cols = useColumnWidths(COLUMNS, COLUMN_STORAGE_KEY);
 
@@ -266,15 +295,15 @@ export function MetadataTable({
                     </div>
                   </td>
                   <td onClick={(e) => e.stopPropagation()}>
-                    <select
-                      className="cell-select plain"
-                      aria-label={`Type of ${v.name}`}
-                      value={TYPE_OPTIONS.includes(v.type) ? v.type : "__other"}
-                      onChange={(e) => void onPatch(v.name, { type: e.target.value }, before(v, ["type"]))}
-                    >
-                      {!TYPE_OPTIONS.includes(v.type) && <option value="__other">{v.type}</option>}
-                      {TYPE_OPTIONS.map((t) => <option key={t} value={t}>{t}</option>)}
-                    </select>
+                    <Picker
+                      title="Type"
+                      ariaLabel={`Type of ${v.name}`}
+                      options={(TYPE_OPTIONS.includes(v.type) ? TYPE_OPTIONS : [v.type, ...TYPE_OPTIONS]).map((t) => ({ value: t, label: t, text: t }))}
+                      value={v.type}
+                      width={200}
+                      trigger={v.type}
+                      onChange={(type) => onPatch(v.name, { type }, before(v, ["type"]))}
+                    />
                   </td>
                   <td onClick={(e) => e.stopPropagation()}>
                     {fmt ? (
@@ -324,13 +353,11 @@ export function MetadataTable({
                     />
                   </td>
                   <td onClick={(e) => e.stopPropagation()} style={{ position: "relative" }}>
-                    <button type="button" className="chip-btn" onClick={() => setLabelsFor(labelsFor === v.name ? null : v.name)}>
-                      {nLabels === 0 ? <span className="faint">add labels</span> : (
-                        <>
-                          {nLabels} {nLabels === 1 ? "label" : "labels"}
-                          <span className="faint" style={{ maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis" }}>{firstLabels}{nLabels > 2 ? " …" : ""}</span>
-                        </>
-                      )}
+                    <button type="button" className={`pick-btn ${labelsFor === v.name ? "open" : ""}`} aria-label={`Value labels of ${v.name}`} title={firstLabels || "Add value labels"} onClick={() => setLabelsFor(labelsFor === v.name ? null : v.name)}>
+                      <span className="pick-val">
+                        {nLabels === 0 ? <span className="faint">none</span> : <>{nLabels} {nLabels === 1 ? "label" : "labels"} <span className="faint">· {firstLabels}{nLabels > 2 ? " …" : ""}</span></>}
+                      </span>
+                      <Chevron />
                     </button>
                     {labelsFor === v.name && (
                       <ValueLabelsEditor
@@ -354,14 +381,15 @@ export function MetadataTable({
                   <td onClick={(e) => e.stopPropagation()}>
                     <div className="col" style={{ gap: 3, alignItems: "flex-start" }}>
                       <div className="row ai-row">
-                        <select
-                          className="cell-select plain"
-                          aria-label={`Measure of ${v.name}`}
+                        <Picker
+                          title="Level of measurement"
+                          ariaLabel={`Measure of ${v.name}`}
+                          options={MEASURE_PICKS}
                           value={v.measure}
-                          onChange={(e) => void onPatch(v.name, { measure: e.target.value }, before(v, ["measure"]))}
-                        >
-                          {MEASURE_OPTIONS.map((m) => <option key={m} value={m}>{m}</option>)}
-                        </select>
+                          width={260}
+                          trigger={v.measure}
+                          onChange={(measure) => onPatch(v.name, { measure }, before(v, ["measure"]))}
+                        />
                         <AiButton title={`Suggest the level of measurement for ${v.name}`} busy={busyFor(v.name, "measure")} disabled={!aiAvailable} onClick={() => onEnrich([v.name], ["measure"])} />
                       </div>
                       {sug && sug.measure !== undefined && (
@@ -377,14 +405,19 @@ export function MetadataTable({
                   <td onClick={(e) => e.stopPropagation()}>
                     <div className="col" style={{ gap: 3, alignItems: "flex-start" }}>
                       <div className="row ai-row">
-                        <select
-                          className={`cell-select ${roleClass(v.default_role)}`}
-                          aria-label={`Role of ${v.name}`}
-                          value={v.default_role}
-                          onChange={(e) => void onPatch(v.name, { role: e.target.value }, before(v, ["role"]))}
-                        >
-                          {ROLE_OPTIONS.map((r) => <option key={r} value={r}>{roleLabel(r)}</option>)}
-                        </select>
+                        <Picker
+                          multiple
+                          minSelected={1}
+                          title="Role"
+                          subtitle="one or more"
+                          ariaLabel={`Role of ${v.name}`}
+                          options={ROLE_PICKS}
+                          value={v.default_role.split(",")}
+                          width={300}
+                          triggerTitle={roleLabel(v.default_role)}
+                          trigger={roleLabel(v.default_role)}
+                          onChange={(roles) => onPatch(v.name, { role: roles.join(",") }, before(v, ["role"]))}
+                        />
                         <AiButton title={`Suggest a role for ${v.name}`} busy={busyFor(v.name, "role")} disabled={!aiAvailable} onClick={() => onEnrich([v.name], ["role"])} />
                       </div>
                       {sug && sug.role !== undefined && (
@@ -397,19 +430,22 @@ export function MetadataTable({
                       )}
                     </div>
                   </td>
-                  <td onClick={(e) => e.stopPropagation()} style={{ position: "relative" }}>
+                  <td onClick={(e) => e.stopPropagation()}>
                     <div className="col" style={{ gap: 3, alignItems: "flex-start" }}>
                       <div className="row ai-row">
-                        <button
-                          type="button"
-                          className="chip-btn"
-                          title={v.functions.length ? `Functions: ${v.functions.map(functionLabel).join(", ")}` : "No variable function (a plain measured value)"}
-                          onClick={() => setFunctionsFor(functionsFor === v.name ? null : v.name)}
-                        >
-                          {v.functions.length === 0 ? <span className="faint">none</span> : (
-                            <span className="fn-tags">{v.functions.map((f) => <span key={f} className={`fn-tag fn-${f}`}>{functionLabel(f)}</span>)}</span>
-                          )}
-                        </button>
+                        <Picker
+                          multiple
+                          title="Variable function"
+                          subtitle="what the variable is, not what it measures"
+                          ariaLabel={`Functions of ${v.name}`}
+                          options={functionPicks(v.functions)}
+                          value={v.functions}
+                          width={400}
+                          footer="Leave all unticked for a plain measured value · each tick is saved at once"
+                          triggerTitle={v.functions.length ? `Functions: ${v.functions.map(functionLabel).join(", ")}` : "No variable function (a plain measured value)"}
+                          trigger={v.functions.length === 0 ? <span className="faint">none</span> : v.functions.map(functionLabel).join(", ")}
+                          onChange={(functions) => onPatch(v.name, { functions }, before(v, ["functions"]))}
+                        />
                         <AiButton title={`Suggest variable functions for ${v.name}`} busy={busyFor(v.name, "function")} disabled={!aiAvailable} onClick={() => onEnrich([v.name], ["function"])} />
                       </div>
                       {sug && sug.functions !== undefined && (
@@ -421,28 +457,23 @@ export function MetadataTable({
                         />
                       )}
                     </div>
-                    {functionsFor === v.name && (
-                      <FunctionsEditor
-                        functions={v.functions}
-                        onClose={() => setFunctionsFor(null)}
-                        onSave={(functions) => onPatch(v.name, { functions }, before(v, ["functions"]))}
-                      />
-                    )}
                   </td>
                   <td onClick={(e) => e.stopPropagation()}>
                     <div className="col" style={{ gap: 3, alignItems: "flex-start" }}>
                       <div className="row ai-row">
-                        <select
-                          className="cell-select plain"
-                          aria-label={`Unit of measure of ${v.name}`}
-                          title={v.unit_of_measure ?? "No unit of measure"}
+                        <Picker
+                          title="Unit of measure"
+                          subtitle="EU unit table"
+                          ariaLabel={`Unit of measure of ${v.name}`}
+                          options={v.unit_of_measure && !isKnownUnit(v.unit_of_measure)
+                            ? [UNIT_PICKS[0], { value: v.unit_of_measure, label: unitLabel(v.unit_of_measure), text: v.unit_of_measure, hint: "Not in the table" }, ...UNIT_PICKS.slice(1)]
+                            : UNIT_PICKS}
                           value={v.unit_of_measure ?? ""}
-                          onChange={(e) => void onPatch(v.name, { unit_of_measure: e.target.value }, before(v, ["unit_of_measure"]))}
-                        >
-                          <option value="">—</option>
-                          {v.unit_of_measure && !isKnownUnit(v.unit_of_measure) && <option value={v.unit_of_measure}>{unitLabel(v.unit_of_measure)}</option>}
-                          {UNIT_OPTIONS.map((u) => <option key={u.code} value={unitUri(u.code)}>{u.alt} · {u.label}</option>)}
-                        </select>
+                          width={300}
+                          triggerTitle={v.unit_of_measure ?? "No unit of measure"}
+                          trigger={v.unit_of_measure ? unitLabel(v.unit_of_measure) : <span className="faint">none</span>}
+                          onChange={(unit) => onPatch(v.name, { unit_of_measure: unit }, before(v, ["unit_of_measure"]))}
+                        />
                         <AiButton title={`Suggest a unit of measure for ${v.name}`} busy={busyFor(v.name, "unit")} disabled={!aiAvailable} onClick={() => onEnrich([v.name], ["unit"])} />
                       </div>
                       {sug && sug.unit_of_measure !== undefined && (
@@ -458,13 +489,11 @@ export function MetadataTable({
                   <td onClick={(e) => e.stopPropagation()} style={{ position: "relative" }}>
                     <div className="col" style={{ gap: 3, alignItems: "flex-start" }}>
                       <div className="row ai-row">
-                        <button type="button" className="chip-btn" title={v.concepts.map((c) => c.uri).join("\n") || "Add concepts"} onClick={() => setConceptsFor(conceptsFor === v.name ? null : v.name)}>
-                          {nConcepts === 0 ? <span className="faint">add concepts</span> : (
-                            <>
-                              {nConcepts} {nConcepts === 1 ? "concept" : "concepts"}
-                              <span className="faint" style={{ maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis" }}>{firstConcepts}{nConcepts > 2 ? " …" : ""}</span>
-                            </>
-                          )}
+                        <button type="button" className={`pick-btn ${conceptsFor === v.name ? "open" : ""}`} aria-label={`Concepts of ${v.name}`} title={v.concepts.map((c) => c.uri).join("\n") || "Add concepts"} onClick={() => setConceptsFor(conceptsFor === v.name ? null : v.name)}>
+                          <span className="pick-val">
+                            {nConcepts === 0 ? <span className="faint">none</span> : <>{nConcepts} {nConcepts === 1 ? "concept" : "concepts"} <span className="faint">· {firstConcepts}{nConcepts > 2 ? " …" : ""}</span></>}
+                          </span>
+                          <Chevron />
                         </button>
                         <AiButton title={`Suggest ELSST concepts for ${v.name}`} busy={busyFor(v.name, "concept")} disabled={!aiAvailable} onClick={() => onEnrich([v.name], ["concept"])} />
                       </div>

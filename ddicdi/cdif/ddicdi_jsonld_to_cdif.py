@@ -49,10 +49,11 @@ DDI-CDI 1.1beta JSON-LD that DDI-CDI Studio writes. Changes against upstream
     maximum also become schema:minValue / schema:maxValue.
   - A header schema:contentUrl is the distribution's contentUrl (before
     prov:wasDerivedFrom).
-  - Header funding, measurementTechnique and prov:wasGeneratedBy are copied as
-    well; with a generating activity the catalog record also declares the
-    provenance profile. The context gains the OWL-Time prefix for
-    temporalCoverage intervals.
+  - AttributeComponent qualifies -> cdif:qualifies on the attribute's
+    variable, referencing the variables of the qualified components (a single
+    reference when there is one).
+  - Header funding is copied as well. The context gains the OWL-Time prefix
+    for temporalCoverage intervals.
   - Value domains are labelled: cdif:displayLabel on the Substantive /
     SentinelValueDomain, schema:name on the EnumerationDomain.
   - The catalog record carries schema:sdDatePublished (the conversion date).
@@ -148,8 +149,7 @@ HEADER_PASSTHROUGH = ("schema:url", "schema:version", "schema:creator",
                       "schema:keywords", "schema:datePublished",
                       "schema:dateModified", "schema:temporalCoverage",
                       "schema:spatialCoverage", "schema:citation",
-                      "schema:funding", "schema:measurementTechnique",
-                      "prov:wasGeneratedBy")
+                      "schema:funding")
 
 IDENTIFIERS_ORG = "https://registry.identifiers.org/registry/"
 DOI_RE = re.compile(r"^(?:https?://(?:dx\.)?doi\.org/|doi:)?(10\.\d{4,9}/\S+)$", re.I)
@@ -338,7 +338,20 @@ def build_statistics_collection(coll, members, index):
     return node
 
 
-def build_variable(iv, roles, index, code_order, statistics=None):
+def build_qualifies_map(objects, index):
+    """{attribute InstanceVariable id: [qualified InstanceVariable ids]}."""
+    out = {}
+    for comp in by_type(objects, "AttributeComponent"):
+        var = comp.get("isDefinedBy_RepresentedVariable")
+        targets = [value(index.get(c), "isDefinedBy_RepresentedVariable")
+                   for c in as_list(comp.get("qualifies"))]
+        targets = [t for t in targets if t and t != var]
+        if var and targets:
+            out[var] = targets
+    return out
+
+
+def build_variable(iv, roles, index, code_order, statistics=None, qualifies=None):
     name = value(iv, "name", "name") or iv["@id"].lstrip("#")
     vm = {"@type": ["schema:PropertyValue", "cdi:InstanceVariable"],
           "@id": iv["@id"], "schema:name": name}
@@ -347,6 +360,10 @@ def build_variable(iv, roles, index, code_order, statistics=None):
         vm["schema:description"] = description
     if iv["@id"] in roles:
         vm["cdif:role"] = roles[iv["@id"]]
+    targets = (qualifies or {}).get(iv["@id"])
+    if targets and vm.get("cdif:role") == "Attribute":
+        refs = [{"@id": t} for t in targets]
+        vm["cdif:qualifies"] = refs[0] if len(refs) == 1 else refs
     functions = [f.get("entryValue") if isinstance(f, dict) else f
                  for f in as_list(iv.get("function"))]
     if any(functions):
@@ -589,7 +606,8 @@ def convert_document(header, stem, explicit_id=None):
     statistics = {}
     for o in by_type(objects, "Statistics", "CategoryStatistics"):
         statistics.setdefault(o.get("has_StatisticsCollection"), []).append(o)
-    variables = [build_variable(o, roles, index, code_order, statistics)
+    qualifies = build_qualifies_map(objects, index)
+    variables = [build_variable(o, roles, index, code_order, statistics, qualifies)
                  for o in by_type(objects, "InstanceVariable")]
 
     iri = explicit_id or header.get("@id") or f"urn:ddi-cdi:{stem}"
@@ -624,9 +642,6 @@ def convert_document(header, stem, explicit_id=None):
     if "cdi:isStructuredBy" in doc["schema:distribution"][0]:
         doc["schema:subjectOf"]["dcterms:conformsTo"].append(
             {"@id": "https://w3id.org/cdif/data_structure/1.1"})
-    if doc.get("prov:wasGeneratedBy"):
-        doc["schema:subjectOf"]["dcterms:conformsTo"].append(
-            {"@id": "https://w3id.org/cdif/provenance/1.1"})
     return doc
 
 

@@ -77,19 +77,6 @@ class GrantIO(BaseModel):
     title: str = Field("", description="grant or project name")
 
 
-class MethodologyIO(BaseModel):
-    """How the data were collected; written to CDIF as a prov:wasGeneratedBy activity."""
-
-    description: str = ""
-    collection_start: str = Field("", pattern=_ISO_DATE)
-    collection_end: str = Field("", pattern=_ISO_DATE)
-    modes: list[str] = Field(default_factory=list, description="DDI ModeOfCollection codes, e.g. Interview.FaceToFace.CAPIorCAMI")
-    sampling: str = Field("", description="DDI SamplingProcedure code, e.g. Probability.Multistage")
-    sampling_description: str = ""
-    universe: str = Field("", description="the population the data describe")
-    instrument: str = Field("", description="questionnaire or other instrument: URL or name")
-
-
 class DatasetInfoIO(BaseModel):
     """Dataset-level description: what the CDIF discovery profile asks for beyond the variables."""
 
@@ -112,7 +99,6 @@ class DatasetInfoIO(BaseModel):
     temporal_end: str = Field("", pattern=_ISO_DATE)
     spatial: list[str] = Field(default_factory=list, description="places the data cover, e.g. countries")
     funding: list[GrantIO] = Field(default_factory=list)
-    methodology: MethodologyIO = Field(default_factory=MethodologyIO)
 
     @classmethod
     def from_info(cls, info: DatasetInfo) -> "DatasetInfoIO":

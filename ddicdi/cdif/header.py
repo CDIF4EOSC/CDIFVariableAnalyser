@@ -8,10 +8,9 @@ discovery terms it finds there. Only filled-in fields are written.
 from __future__ import annotations
 
 import re
-from dataclasses import replace
 
 from .. import vocabularies as cv
-from ..models import Agent, DatasetMeta, Grant, Methodology
+from ..models import Agent, DatasetMeta, Grant
 
 _ORCID_RE = re.compile(r"^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$")  # 0000-0002-1825-0097
 _ROR_RE = re.compile(r"^0[a-z0-9]{6}\d{2}$")  # 05xg72x27
@@ -104,33 +103,6 @@ def grant_node(grant: Grant) -> dict:
     return node
 
 
-def activity_node(m: Methodology) -> dict:
-    """The data collection -> a schema:Action / prov:Activity (CDIF provenance). The universe
-    is what the action is carried out on (schema:object); the sampling procedure is its
-    method (schema:actionProcess, a schema:HowTo)."""
-    node: dict = {"@type": ["schema:Action", "prov:Activity"], "schema:name": "Data collection"}
-    if m.description:
-        node["schema:description"] = m.description
-    if m.collection_start:
-        node["schema:startTime"] = m.collection_start
-    if m.collection_end:
-        node["schema:endTime"] = m.collection_end
-    if m.universe:
-        node["schema:object"] = m.universe
-    if m.instrument:
-        node["prov:used"] = [{"@id": m.instrument} if _iri(m.instrument) else m.instrument]
-    if m.sampling or m.sampling_description:
-        term = cv.find(cv.SAMPLING_PROCEDURE, m.sampling)
-        howto: dict = {"@type": ["schema:HowTo"],
-                       "schema:name": term.label if term else (m.sampling or "Sampling procedure")}
-        if m.sampling_description:
-            howto["schema:description"] = m.sampling_description
-        if m.sampling:
-            howto["schema:additionalType"] = [_term(cv.SAMPLING_PROCEDURE, cv.SAMPLING_PROCEDURE_SET, m.sampling)]
-        node["schema:actionProcess"] = howto
-    return node
-
-
 def dataset_header(meta: DatasetMeta) -> dict:
     """Header entries for ``convert_document``: the editor's dataset description and the
     size and checksum of the uploaded file. Only what is known is written."""
@@ -176,10 +148,4 @@ def dataset_header(meta: DatasetMeta) -> dict:
     grants = [grant_node(g) for g in info.funding if g.funder or g.funder_id or g.award or g.title]
     if grants:
         header["schema:funding"] = grants
-    m = info.methodology
-    if m.modes:
-        header["schema:measurementTechnique"] = [
-            _term(cv.MODE_OF_COLLECTION, cv.MODE_OF_COLLECTION_SET, code) for code in m.modes]
-    if not replace(m, modes=[]).is_empty():  # the modes alone are measurementTechnique
-        header["prov:wasGeneratedBy"] = [activity_node(m)]
     return header

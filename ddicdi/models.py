@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Iterator
 
 _INTEGRAL_RE = re.compile(r"^-?\d+\.0+$")
@@ -151,23 +151,6 @@ class Grant:
 
 
 @dataclass
-class Methodology:
-    """How the data were collected: the CDIF provenance activity."""
-
-    description: str = ""
-    collection_start: str = ""  # ISO 8601
-    collection_end: str = ""
-    modes: list[str] = field(default_factory=list)  # DDI ModeOfCollection codes
-    sampling: str = ""  # a DDI SamplingProcedure code
-    sampling_description: str = ""
-    universe: str = ""  # the population the data describe
-    instrument: str = ""  # questionnaire or other instrument: a URL or a name
-
-    def is_empty(self) -> bool:
-        return not any(v for v in asdict(self).values())
-
-
-@dataclass
 class DatasetInfo:
     """Dataset-level description entered in the editor: title, people, dates and the like.
 
@@ -194,22 +177,20 @@ class DatasetInfo:
     temporal_end: str = ""
     spatial: list[str] = field(default_factory=list)  # place names, e.g. countries
     funding: list[Grant] = field(default_factory=list)
-    methodology: Methodology = field(default_factory=Methodology)
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "DatasetInfo":
         publisher = d.get("publisher")
+        known = {f.name for f in fields(cls)}  # a stored workspace may carry dropped fields
         return cls(
             **{
-                **d,
+                **{k: v for k, v in d.items() if k in known},
                 "keywords": list(d.get("keywords", [])),
                 "creators": [Agent(**a) for a in d.get("creators", [])],
                 "publisher": Agent(**publisher) if publisher else None,
                 "contributors": [Agent(**a) for a in d.get("contributors", [])],
                 "spatial": list(d.get("spatial", [])),
                 "funding": [Grant(**g) for g in d.get("funding", [])],
-                "methodology": Methodology(**{**d.get("methodology", {}),
-                                              "modes": list(d.get("methodology", {}).get("modes", []))}),
             }
         )
 

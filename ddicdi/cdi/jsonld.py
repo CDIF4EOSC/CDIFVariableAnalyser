@@ -266,11 +266,23 @@ def generate_IdentifierComponent(meta: DatasetMeta) -> list[Element]:
 
 
 def generate_AttributeComponent(meta: DatasetMeta) -> list[Element]:
-    return [{
-        "@id": f"#attributeComponent-{v}",
-        "@type": "AttributeComponent",
-        "isDefinedBy_RepresentedVariable": f"#instanceVariable-{v}",
-    } for v in meta.roles.attribute if v in meta.column_names]
+    # In a wide file an attribute describes the observation, so it qualifies every
+    # measure (``qualifies`` is what CDIF's cdif:qualifies is made from).
+    measures = [c["@id"] for c in generate_MeasureComponent(meta)]
+    out = []
+    for v in meta.roles.attribute:
+        if v not in meta.column_names:
+            continue
+        el: Element = {
+            "@id": f"#attributeComponent-{v}",
+            "@type": "AttributeComponent",
+            "isDefinedBy_RepresentedVariable": f"#instanceVariable-{v}",
+        }
+        qualified = [m for m in measures if m != f"#measureComponent-{v}"]
+        if qualified:
+            el["qualifies"] = qualified
+        out.append(el)
+    return out
 
 
 def generate_PrimaryKey(meta: DatasetMeta) -> list[Element]:

@@ -21,8 +21,15 @@ export function ValueLabelsEditor({ labels, numeric, onSave, onClose }: Props) {
     const onDoc = (e: MouseEvent) => {
       if (box.current && !box.current.contains(e.target as Node)) onClose();
     };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
     document.addEventListener("mousedown", onDoc);
-    return () => document.removeEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
   }, [onClose]);
 
   const update = (i: number, patch: Partial<Row>) => {
@@ -43,14 +50,14 @@ export function ValueLabelsEditor({ labels, numeric, onSave, onClose }: Props) {
   const dupes = new Set(rows.map((r) => r.code.trim()).filter((c, i, a) => c && a.indexOf(c) !== i));
 
   return (
-    <div ref={box} className="popover" style={{ top: 36, left: 0, width: 420 }} role="dialog" aria-label="Value labels">
-      <div className="row">
+    <div ref={box} className="popover editor" style={{ top: 34, left: 0, width: 420 }} role="dialog" aria-label="Value labels">
+      <div className="picker-head">
         <h3>Value labels</h3>
-        <span className="muted" style={{ fontSize: 12 }}>{numeric ? "numeric codes" : "string codes"}</span>
+        <span className="sub">{numeric ? "numeric codes" : "string codes"}</span>
         <span className="grow" />
-        <button type="button" className="iconbtn" aria-label="Close" onClick={onClose}><IconX /></button>
+        <button type="button" className="iconbtn" aria-label="Close" onClick={onClose}><IconX size={12} /></button>
       </div>
-      <div className="vl-grid" style={{ maxHeight: 300, overflow: "auto", display: "grid" }}>
+      <div className="editor-body vl-grid" style={{ maxHeight: 300, overflow: "auto", display: "grid" }}>
         <span className="h">Code</span><span className="h">Label</span><span className="h" />
         {rows.map((r, i) => (
           <div key={i} style={{ display: "contents" }}>
@@ -71,8 +78,8 @@ export function ValueLabelsEditor({ labels, numeric, onSave, onClose }: Props) {
           </div>
         ))}
       </div>
-      <div className="row">
-        <span className="muted" style={{ fontSize: 11 }}>One Code, Category and Notation per code. Codes inside a missing range go to the sentinel code list.</span>
+      <div className="picker-foot editor-foot">
+        <span>One Code, Category and Notation per code. Codes inside a missing range go to the sentinel code list.</span>
         <span className="grow" />
         <button type="button" className="btn" onClick={onClose}>Cancel</button>
         <button type="button" className="btn primary" disabled={dupes.size > 0} onClick={save}>Save</button>

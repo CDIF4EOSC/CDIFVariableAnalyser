@@ -21,6 +21,7 @@ import pytest
 from ddicdi.cdi.jsonld import GenerateOptions, build_document
 from ddicdi.data import Dataset
 from ddicdi.importers import import_file
+from ddicdi.roles import parse_roles
 from tests.cdi_files import find_context, find_shapes
 
 
@@ -75,6 +76,17 @@ def test_variable_functions_conform(ess11, shapes, context):
     meta.var("dweight").functions = ["Weight"]
     meta.var("idno").functions = ["UnitIdentifier"]
     doc = build_document(Dataset(meta, ess11.csv_path, ess11.qsv), options=GenerateOptions(max_rows=0))
+    conforms, report = _validate(doc, shapes, context)
+    assert conforms, report
+
+
+def test_attribute_qualifies_conforms(ess11, shapes, context):
+    """An attribute ``qualifies`` the measure components."""
+    meta = copy.deepcopy(ess11.meta)
+    meta.roles = parse_roles(meta, {"idno": "identifier", "essround": "attribute"})
+    doc = build_document(Dataset(meta, ess11.csv_path, ess11.qsv), options=GenerateOptions(max_rows=0))
+    attr = next(e for e in doc["DDICDIModels"] if e["@id"] == "#attributeComponent-essround")
+    assert "#measureComponent-ppltrst" in attr["qualifies"] and "#measureComponent-essround" not in attr["qualifies"]
     conforms, report = _validate(doc, shapes, context)
     assert conforms, report
 

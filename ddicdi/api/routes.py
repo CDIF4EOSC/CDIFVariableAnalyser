@@ -151,7 +151,7 @@ def info() -> dict:
             "POST /api/files/{id}/generate?format=ddicdi|cdif": "generate DDI-CDI (or CDIF) JSON-LD as a download",
             "POST /api/files/{id}/output?format=ddicdi|cdif": "regenerate for the editor preview (JSON-LD as JSON)",
             "PUT /api/files/{id}/roles": "replace all variable roles",
-            "GET|PUT /api/files/{id}/info": "dataset description (title, creators, contributors, publisher, dates, keywords, licence, identifier, coverage, funding, methodology) for the CDIF output",
+            "GET|PUT /api/files/{id}/info": "dataset description (title, creators, contributors, publisher, dates, keywords, licence, identifier, coverage, funding) for the CDIF output",
             "POST /api/files/{id}/variables": "add a variable (new column)",
             "PATCH /api/files/{id}/variables/{name}": "edit label, format, type, measure, value labels, missing, role, functions, name, unit of measure, concepts",
             "GET /api/files/{id}/statistics": "summary statistics per variable (qsv stats); also emitted into the output with include_statistics",
