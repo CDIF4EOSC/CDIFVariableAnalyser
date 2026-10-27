@@ -1,6 +1,7 @@
 """CDIF output: the DDI-CDI document through the vendored, extended CDIF converter."""
 
 import json
+from datetime import date
 
 import pytest
 
@@ -88,7 +89,11 @@ INFO = {
 
 def test_dataset_info_round_trip_and_cdif(client):  # noqa: F811
     fid = _upload(client).json()["file_id"]
-    assert client.get(f"/api/files/{fid}").json()["info"]["creators"] == []
+    suggested = client.get(f"/api/files/{fid}").json()["info"]
+    today = date.today().isoformat()
+    assert suggested["date_published"] == suggested["date_modified"] == today
+    assert suggested["title"] and suggested["record_id"] == "urn:ddi-cdi:ESS11-subset"
+    assert suggested["creators"] == []
     r = client.put(f"/api/files/{fid}/info", json=INFO)
     assert r.status_code == 200, r.text
     assert client.get(f"/api/files/{fid}/info").json()["creators"][1]["affiliation"] == "Sikt"

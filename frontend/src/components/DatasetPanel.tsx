@@ -8,12 +8,28 @@ interface Props {
   onSave: (next: DatasetInfo) => Promise<void>;
 }
 
-const LICENSES: { uri: string; label: string }[] = [
-  { uri: "https://creativecommons.org/licenses/by/4.0/", label: "CC BY 4.0" },
-  { uri: "https://creativecommons.org/licenses/by-sa/4.0/", label: "CC BY-SA 4.0" },
-  { uri: "https://creativecommons.org/licenses/by-nc/4.0/", label: "CC BY-NC 4.0" },
-  { uri: "https://creativecommons.org/publicdomain/zero/1.0/", label: "CC0 1.0" },
+const LICENSES: { uri: string; label: string; group: string }[] = [
+  { uri: "https://creativecommons.org/licenses/by/4.0/", label: "CC BY 4.0", group: "Creative Commons" },
+  { uri: "https://creativecommons.org/licenses/by-sa/4.0/", label: "CC BY-SA 4.0", group: "Creative Commons" },
+  { uri: "https://creativecommons.org/licenses/by-nc/4.0/", label: "CC BY-NC 4.0", group: "Creative Commons" },
+  { uri: "https://creativecommons.org/licenses/by-nc-sa/4.0/", label: "CC BY-NC-SA 4.0", group: "Creative Commons" },
+  { uri: "https://creativecommons.org/licenses/by-nd/4.0/", label: "CC BY-ND 4.0", group: "Creative Commons" },
+  { uri: "https://creativecommons.org/licenses/by-nc-nd/4.0/", label: "CC BY-NC-ND 4.0", group: "Creative Commons" },
+  { uri: "https://creativecommons.org/licenses/by/3.0/", label: "CC BY 3.0", group: "Creative Commons" },
+  { uri: "https://creativecommons.org/publicdomain/zero/1.0/", label: "CC0 1.0 (public domain)", group: "Creative Commons" },
+  { uri: "https://creativecommons.org/publicdomain/mark/1.0/", label: "Public Domain Mark 1.0", group: "Creative Commons" },
+  { uri: "https://opendatacommons.org/licenses/by/1-0/", label: "ODC-By 1.0", group: "Open data" },
+  { uri: "https://opendatacommons.org/licenses/odbl/1-0/", label: "ODbL 1.0", group: "Open data" },
+  { uri: "https://opendatacommons.org/licenses/pddl/1-0/", label: "PDDL 1.0", group: "Open data" },
+  { uri: "https://spdx.org/licenses/NLOD-2.0.html", label: "NLOD 2.0 (Norway)", group: "Open data" },
+  { uri: "https://spdx.org/licenses/etalab-2.0.html", label: "Etalab Open Licence 2.0 (France)", group: "Open data" },
+  { uri: "https://spdx.org/licenses/OGL-UK-3.0.html", label: "OGL 3.0 (UK)", group: "Open data" },
+  { uri: "https://spdx.org/licenses/DL-DE-BY-2.0.html", label: "DL-DE-BY 2.0 (Germany)", group: "Open data" },
+  { uri: "https://spdx.org/licenses/MIT.html", label: "MIT", group: "Software" },
+  { uri: "https://spdx.org/licenses/Apache-2.0.html", label: "Apache 2.0", group: "Software" },
+  { uri: "https://spdx.org/licenses/GPL-3.0-or-later.html", label: "GPL 3.0 or later", group: "Software" },
 ];
+const LICENSE_GROUPS = [...new Set(LICENSES.map((l) => l.group))];
 
 const DATE_RE = /^(\d{4}(-\d{2}(-\d{2})?)?)?$/;
 const ORCID_RE = /^(https:\/\/orcid\.org\/)?\d{4}-\d{4}-\d{4}-\d{3}[\dX]$/;
@@ -291,7 +307,11 @@ export function DatasetPanel({ info, filename, onSave }: Props) {
                     }}
                   >
                     <option value="">Not given</option>
-                    {LICENSES.map((l) => <option key={l.uri} value={l.uri}>{l.label}</option>)}
+                    {LICENSE_GROUPS.map((g) => (
+                      <optgroup key={g} label={g}>
+                        {LICENSES.filter((l) => l.group === g).map((l) => <option key={l.uri} value={l.uri}>{l.label}</option>)}
+                      </optgroup>
+                    ))}
                     <option value="other">Other (URI)…</option>
                   </select>
                 </label>
