@@ -7,6 +7,7 @@ import pytest
 
 from ddicdi.cdi.jsonld import GenerateOptions, build_document
 from ddicdi.cdif import convert_document
+from ddicdi.importers import import_file
 from ddicdi.roles import parse_roles
 from tests.test_api import _upload, client  # noqa: F401  (fixture)
 
@@ -126,3 +127,45 @@ def test_empty_info_keeps_defaults(cdif):
     assert rows["schema:propertyID"] == [{"@id": "http://rdf-vocabulary.ddialliance.org/discovery#caseQuantity"}]
     domain = _var(cdif, "ppltrst")["cdi:takesSubstantiveValuesFrom"]
     assert domain["cdif:displayLabel"] == "ppltrst: substantive values" and domain["cdif:takesValuesFrom"]["schema:name"]
+
+
+def test_functions(ess11):
+    by_name = {v.name: v for v in ess11.meta.variables}
+    saved = {n: list(by_name[n].functions) for n in ("dweight", "stratum")}
+    by_name["dweight"].functions = ["Weight"]
+    by_name["stratum"].functions = ["SamplingDesign"]
+    try:
+        doc = convert_document(build_document(ess11, options=GenerateOptions(max_rows=0)), "ESS11-subset")
+    finally:
+        for n, f in saved.items():
+            by_name[n].functions = f
+    assert _var(doc, "dweight")["cdif:function"] == ["Weight"]
+    assert _var(doc, "stratum")["cdif:function"] == ["SamplingDesign"]
+    assert "cdif:function" not in _var(doc, "ppltrst")
+
+
+
+KGM = "http://publications.europa.eu/resource/authority/measurement-unit/KGM"
+
+
+def test_unit_uri_and_mapping_details(ess11):
+    var = ess11.meta.var("dweight")
+    saved = var.unit_of_measure
+    var.unit_of_measure = KGM
+    try:
+        doc = convert_document(build_document(ess11, options=GenerateOptions(max_rows=0)), "ESS11-subset")
+    finally:
+        var.unit_of_measure = saved
+    dweight = _var(doc, "dweight")
+    assert dweight["cdif:describedUnitOfMeasure"] == dweight["schema:unitCode"] == {"@id": KGM}
+    assert "cdif:simpleUnitOfMeasure" not in dweight
+    mapping = next(m for m in doc["schema:distribution"][0]["cdif:hasPhysicalMapping"]
+                   if m["cdif:formats_InstanceVariable"] == {"@id": "#instanceVariable-dweight"})
+    assert mapping["cdi:decimalPositions"] == 2
+
+
+def test_csv_null_sequence(qsv, tmp_path):
+    csv = tmp_path / "small.csv"
+    csv.write_text("id,score\n1,2.5\n2,\n")
+    doc = convert_document(build_document(import_file(csv, tmp_path / "work", qsv), options=GenerateOptions(max_rows=0)), "small")
+    assert all(m["cdi:nullSequence"] == "" for m in doc["schema:distribution"][0]["cdif:hasPhysicalMapping"])

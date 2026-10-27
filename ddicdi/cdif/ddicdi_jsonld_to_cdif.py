@@ -10,7 +10,7 @@ DDI-CDI 1.1beta JSON-LD that DDI-CDI Studio writes. Changes against upstream
 
   - InstanceVariable displayLabel -> schema:description (definition is the
     fallback); uses_Concept -> cdif:uses; describedUnitOfMeasure ->
-    cdif:simpleUnitOfMeasure.
+    cdif:simpleUnitOfMeasure (a URI: see below).
   - Substantive and sentinel value domains with a CodeList ->
     cdi:takesSubstantiveValuesFrom / cdi:takesSentinelValuesFrom, each a
     cdif:EnumerationDomain referencing a skos:ConceptScheme (ported from
@@ -33,6 +33,14 @@ DDI-CDI 1.1beta JSON-LD that DDI-CDI Studio writes. Changes against upstream
   - The countRows / countColumns propertyID is an IRI reference, not a string
     (the CDIF shapes reject a URI-shaped string literal).
   - A variable's concepts are also its schema:propertyID.
+  - InstanceVariable function (Weight, SamplingDesign, UnitIdentifier, ...)
+    -> cdif:function, one string per ControlledVocabularyEntry.
+  - A unit of measure given as a URI -> cdif:describedUnitOfMeasure and
+    schema:unitCode as IRI references; cdif:simpleUnitOfMeasure is kept for a
+    plain string.
+  - TextMapping / LocatorMapping decimalPositions, scale, numberPattern,
+    defaultValue and isRequired are copied, and nullSequence when it is a
+    single string.
   - Value domains are labelled: cdif:displayLabel on the Substantive /
     SentinelValueDomain, schema:name on the EnumerationDomain.
   - The catalog record carries schema:sdDatePublished (the conversion date).
@@ -261,8 +269,15 @@ def build_variable(iv, roles, index, code_order):
         vm["schema:description"] = description
     if iv["@id"] in roles:
         vm["cdif:role"] = roles[iv["@id"]]
+    functions = [f.get("entryValue") if isinstance(f, dict) else f
+                 for f in as_list(iv.get("function"))]
+    if any(functions):
+        vm["cdif:function"] = [f for f in functions if f]
     unit = value(iv, "describedUnitOfMeasure", "entryValue")
-    if unit:
+    if unit and unit.startswith(("http://", "https://")):
+        vm["cdif:describedUnitOfMeasure"] = {"@id": unit}
+        vm["schema:unitCode"] = {"@id": unit}
+    elif unit:
         vm["cdif:simpleUnitOfMeasure"] = unit
     concepts = [value(index.get(c), "owl:sameAs", "@id") for c in as_list(iv.get("uses_Concept"))]
     if any(concepts):
@@ -354,9 +369,9 @@ def build_physical_mappings(objects, index):
     """TextMapping -> cdif:TextMapping and LocatorMapping -> cdif:LocatorMapping,
     ordered by PhysicalMappingPosition.
 
-    The export gives every column the same nullSequence list (its own default
-    set of null tokens); cdi:nullSequence takes a single string, so it is not
-    carried over.
+    The CODATA export gives every column the same nullSequence list (its own
+    default set of null tokens); cdi:nullSequence takes a single string, so only
+    a string nullSequence is carried over.
     """
     order = position_map(objects, "PhysicalMappingPosition")
     mappings = []
@@ -373,9 +388,12 @@ def build_physical_mappings(objects, index):
         pdt = value(var, "physicalDataType", "entryValue")
         if pdt:
             entry["cdif:physicalDataType"] = pdt
-        for key in ("minimumLength", "maximumLength"):
+        for key in ("minimumLength", "maximumLength", "decimalPositions", "scale",
+                    "numberPattern", "defaultValue", "isRequired"):
             if key in tm:
                 entry["cdi:" + key] = tm[key]
+        if isinstance(tm.get("nullSequence"), str):
+            entry["cdi:nullSequence"] = tm["nullSequence"]
         if tm.get("formats"):
             entry["cdif:formats_InstanceVariable"] = {"@id": tm["formats"]}
         mappings.append(entry)
