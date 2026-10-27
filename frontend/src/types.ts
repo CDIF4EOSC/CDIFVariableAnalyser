@@ -52,7 +52,35 @@ export interface Agent {
   affiliation: string;
   affiliation_id: string; // ROR
   email: string;
+  role: string; // contributors only: DataCite contributorType
 }
+
+export interface Grant {
+  funder: string;
+  funder_id: string; // ROR
+  award: string;
+  title: string;
+}
+
+/** How the data were collected: the CDIF provenance activity. */
+export interface Methodology {
+  description: string;
+  collection_start: string;
+  collection_end: string;
+  modes: string[]; // DDI ModeOfCollection codes
+  sampling: string; // DDI SamplingProcedure code
+  sampling_description: string;
+  universe: string;
+  instrument: string;
+}
+
+export interface VocabularyTerm {
+  code: string;
+  label: string;
+  uri: string;
+}
+
+export type Vocabularies = Record<"mode_of_collection" | "sampling_procedure" | "contributor_role", VocabularyTerm[]>;
 
 /** Dataset-level description for the CDIF discovery profile; not in the data file. */
 export interface DatasetInfo {
@@ -70,6 +98,12 @@ export interface DatasetInfo {
   date_modified: string;
   creators: Agent[];
   publisher: Agent | null;
+  contributors: Agent[];
+  temporal_start: string;
+  temporal_end: string;
+  spatial: string[];
+  funding: Grant[];
+  methodology: Methodology;
 }
 
 export interface FileInfo {

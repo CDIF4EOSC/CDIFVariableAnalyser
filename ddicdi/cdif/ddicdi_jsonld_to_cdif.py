@@ -49,6 +49,10 @@ DDI-CDI 1.1beta JSON-LD that DDI-CDI Studio writes. Changes against upstream
     maximum also become schema:minValue / schema:maxValue.
   - A header schema:contentUrl is the distribution's contentUrl (before
     prov:wasDerivedFrom).
+  - Header funding, measurementTechnique and prov:wasGeneratedBy are copied as
+    well; with a generating activity the catalog record also declares the
+    provenance profile. The context gains the OWL-Time prefix for
+    temporalCoverage intervals.
   - Value domains are labelled: cdif:displayLabel on the Substantive /
     SentinelValueDomain, schema:name on the EnumerationDomain.
   - The catalog record carries schema:sdDatePublished (the conversion date).
@@ -111,6 +115,7 @@ CDI_CTX = {
     "cdif": "https://w3id.org/cdif/",
     "skos": "http://www.w3.org/2004/02/skos/core#",
     "prov": "http://www.w3.org/ns/prov#",
+    "time": "http://www.w3.org/2006/time#",
 }
 
 # DDI-CDI DataStructureComponent type -> CDIF cdif:role (values must be
@@ -142,7 +147,9 @@ HEADER_PASSTHROUGH = ("schema:url", "schema:version", "schema:creator",
                       "schema:contributor", "schema:publisher",
                       "schema:keywords", "schema:datePublished",
                       "schema:dateModified", "schema:temporalCoverage",
-                      "schema:spatialCoverage", "schema:citation")
+                      "schema:spatialCoverage", "schema:citation",
+                      "schema:funding", "schema:measurementTechnique",
+                      "prov:wasGeneratedBy")
 
 IDENTIFIERS_ORG = "https://registry.identifiers.org/registry/"
 DOI_RE = re.compile(r"^(?:https?://(?:dx\.)?doi\.org/|doi:)?(10\.\d{4,9}/\S+)$", re.I)
@@ -617,6 +624,9 @@ def convert_document(header, stem, explicit_id=None):
     if "cdi:isStructuredBy" in doc["schema:distribution"][0]:
         doc["schema:subjectOf"]["dcterms:conformsTo"].append(
             {"@id": "https://w3id.org/cdif/data_structure/1.1"})
+    if doc.get("prov:wasGeneratedBy"):
+        doc["schema:subjectOf"]["dcterms:conformsTo"].append(
+            {"@id": "https://w3id.org/cdif/provenance/1.1"})
     return doc
 
 

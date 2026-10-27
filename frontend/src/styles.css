@@ -536,3 +536,5 @@ table.grid.sub tbody tr.sentinel .freq-bar { background: var(--amber); opacity: 
 .ds-check li.recommended .mark { background: var(--amber-bg); color: var(--amber-ink); }
 .ds-check p { margin: 14px 0 0; font-size: 11px; color: var(--muted); line-height: 1.45; }
 @media (max-width: 1100px) { .ds-layout { flex-direction: column-reverse; } .ds-check { position: static; flex-basis: auto; width: 100%; } }
+.role-select { height: 32px; padding: 0 8px; border-radius: 8px; border: 1px solid #d1d5db; background: #fff; max-width: 220px; }
+.kw-select { border: none; background: transparent; height: 28px; flex: 1 1 180px; min-width: 160px; color: var(--muted); outline: none; }

@@ -21,7 +21,7 @@ from ddicdi.models import DatasetInfo
 from tests.test_cdif import INFO
 
 ROOT = Path(__file__).resolve().parent.parent
-PROFILES = ["Discovery", "DataDescription", "DataStructure", "Complete"]
+PROFILES = ["Discovery", "DataDescription", "DataStructure", "Provenance", "Complete"]
 
 
 def _shapes(profile: str) -> Path:

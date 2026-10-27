@@ -9,7 +9,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, Request, Response, UploadFile
 from pydantic import ValidationError
 
-from .. import __version__, editing, enrich, stats
+from .. import __version__, editing, enrich, stats, vocabularies
 from ..cdi.jsonld import GenerateOptions, build_document, generate_complete_json_ld
 from ..cdif import convert_document, dataset_header
 from ..cdi.statistics import STATISTIC_NAMES
@@ -151,7 +151,7 @@ def info() -> dict:
             "POST /api/files/{id}/generate?format=ddicdi|cdif": "generate DDI-CDI (or CDIF) JSON-LD as a download",
             "POST /api/files/{id}/output?format=ddicdi|cdif": "regenerate for the editor preview (JSON-LD as JSON)",
             "PUT /api/files/{id}/roles": "replace all variable roles",
-            "GET|PUT /api/files/{id}/info": "dataset description (title, creators, publisher, dates, keywords, licence, identifier) for the CDIF output",
+            "GET|PUT /api/files/{id}/info": "dataset description (title, creators, contributors, publisher, dates, keywords, licence, identifier, coverage, funding, methodology) for the CDIF output",
             "POST /api/files/{id}/variables": "add a variable (new column)",
             "PATCH /api/files/{id}/variables/{name}": "edit label, format, type, measure, value labels, missing, role, functions, name, unit of measure, concepts",
             "GET /api/files/{id}/statistics": "summary statistics per variable (qsv stats); also emitted into the output with include_statistics",
@@ -166,6 +166,7 @@ def info() -> dict:
         },
         "authentication": "X-API-Key header" if settings.api_key else "none",
         "ai_enrichment": bool(settings.n8n_bearer_key),
+        "vocabularies": vocabularies.as_json(),
     }
 
 

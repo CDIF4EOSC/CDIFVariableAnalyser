@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { Agent, DatasetInfo } from "../types";
+import type { Agent, DatasetInfo, Grant, Methodology, Vocabularies, VocabularyTerm } from "../types";
 import { IconPlus, IconX } from "./Icons";
 
 interface Props {
@@ -7,6 +7,7 @@ interface Props {
   filename: string;
   fileSize: number | null;
   fileMd5: string | null;
+  vocabularies?: Vocabularies;
   onSave: (next: DatasetInfo) => Promise<void>;
 }
 
@@ -39,7 +40,10 @@ const LICENSE_GROUPS = [...new Set(LICENSES.map((l) => l.group))];
 const DATE_RE = /^(\d{4}(-\d{2}(-\d{2})?)?)?$/;
 const ORCID_RE = /^(https:\/\/orcid\.org\/)?\d{4}-\d{4}-\d{4}-\d{3}[\dX]$/;
 
-const emptyAgent = (kind: Agent["kind"]): Agent => ({ name: "", kind, identifier: "", affiliation: "", affiliation_id: "", email: "" });
+const emptyAgent = (kind: Agent["kind"]): Agent => ({ name: "", kind, identifier: "", affiliation: "", affiliation_id: "", email: "", role: "" });
+const emptyGrant = (): Grant => ({ funder: "", funder_id: "", award: "", title: "" });
+const methodologyFilled = (m: Methodology) =>
+  Boolean(m.description || m.collection_start || m.collection_end || m.sampling || m.sampling_description || m.universe || m.instrument);
 
 /** What the CDIF shapes ask of a dataset, and whether the description gives it. */
 export function checklist(d: DatasetInfo) {
@@ -54,13 +58,17 @@ export function checklist(d: DatasetInfo) {
     { label: "Download URL", ok: Boolean(d.content_url.trim()), level: "recommended", note: "the data file's own link" },
     { label: "Date published", ok: Boolean(d.date_published), level: "suggested" },
     { label: "Publisher", ok: Boolean(d.publisher?.name.trim()), level: "suggested" },
+    { label: "Temporal coverage", ok: Boolean(d.temporal_start || d.temporal_end), level: "suggested" },
+    { label: "Spatial coverage", ok: d.spatial.some((p) => p.trim()), level: "suggested" },
+    { label: "Methodology", ok: methodologyFilled(d.methodology), level: "suggested", note: "makes the record CDIF provenance" },
   ] as const;
 }
 
-function AgentRow({ agent, index, count, onChange, onMove, onRemove }: {
+function AgentRow({ agent, index, count, roles, onChange, onMove, onRemove }: {
   agent: Agent;
   index: number;
   count: number;
+  roles?: VocabularyTerm[]; // given for contributors: the role picker
   onChange: (a: Agent) => void;
   onMove: (delta: number) => void;
   onRemove: () => void;
@@ -76,6 +84,12 @@ function AgentRow({ agent, index, count, onChange, onMove, onRemove }: {
           <button type="button" className={person ? "on" : ""} onClick={() => set("kind", "person")}>Person</button>
           <button type="button" className={!person ? "on" : ""} onClick={() => set("kind", "organization")}>Organisation</button>
         </div>
+        {roles && (
+          <select className="role-select" aria-label="Role" value={agent.role} onChange={(e) => set("role", e.target.value)}>
+            <option value="">No role</option>
+            {roles.map((r) => <option key={r.code} value={r.code}>{r.label}</option>)}
+          </select>
+        )}
         <span className="grow" />
         <button type="button" className="iconbtn" title="Move up" disabled={index === 0} onClick={() => onMove(-1)}>↑</button>
         <button type="button" className="iconbtn" title="Move down" disabled={index === count - 1} onClick={() => onMove(1)}>↓</button>
@@ -117,7 +131,7 @@ function AgentRow({ agent, index, count, onChange, onMove, onRemove }: {
   );
 }
 
-function KeywordInput({ keywords, onChange }: { keywords: string[]; onChange: (k: string[]) => void }) {
+function KeywordInput({ keywords, onChange, placeholder = "Type a keyword and press Enter" }: { keywords: string[]; onChange: (k: string[]) => void; placeholder?: string }) {
   const [text, setText] = useState("");
   const add = () => {
     // One keyword per entry: CDIF rejects a comma-separated string.
@@ -135,7 +149,7 @@ function KeywordInput({ keywords, onChange }: { keywords: string[]; onChange: (k
       ))}
       <input
         value={text}
-        placeholder={keywords.length ? "Add another…" : "Type a keyword and press Enter"}
+        placeholder={keywords.length ? "Add another…" : placeholder}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === ",") {
@@ -151,7 +165,7 @@ function KeywordInput({ keywords, onChange }: { keywords: string[]; onChange: (k
   );
 }
 
-export function DatasetPanel({ info, filename, fileSize, fileMd5, onSave }: Props) {
+export function DatasetPanel({ info, filename, fileSize, fileMd5, vocabularies, onSave }: Props) {
   const [draft, setDraft] = useState<DatasetInfo>(info);
   const [busy, setBusy] = useState(false);
   const isPreset = (uri: string) => LICENSES.some((l) => l.uri === uri);
@@ -167,16 +181,29 @@ export function DatasetPanel({ info, filename, fileSize, fileMd5, onSave }: Prop
   const dirty = JSON.stringify(draft) !== saved;
   const set = <K extends keyof DatasetInfo>(k: K, v: DatasetInfo[K]) => setDraft((d) => ({ ...d, [k]: v }));
   const dateErr = (v: string) => (DATE_RE.test(v) ? "" : "Use YYYY, YYYY-MM or YYYY-MM-DD");
-  const invalid = Boolean(dateErr(draft.date_published) || dateErr(draft.date_modified));
+  const m = draft.methodology;
+  const invalid = [draft.date_published, draft.date_modified, draft.temporal_start, draft.temporal_end, m.collection_start, m.collection_end]
+    .some((v) => dateErr(v));
+  const setM = <K extends keyof Methodology>(k: K, v: Methodology[K]) => set("methodology", { ...m, [k]: v });
+  const modeLabel = (code: string) => vocabularies?.mode_of_collection.find((t) => t.code === code)?.label ?? code;
+  const dateField = (label: string, value: string, onChange: (v: string) => void, placeholder = "YYYY-MM-DD") => (
+    <label className="field">
+      <span>{label}</span>
+      <input className={dateErr(value) ? "err" : ""} value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value.trim())} />
+      {dateErr(value) && <small className="errmsg">{dateErr(value)}</small>}
+    </label>
+  );
   const checks = useMemo(() => checklist(draft), [draft]);
   const done = checks.filter((c) => c.ok).length;
 
   const setCreator = (i: number, a: Agent) => set("creators", draft.creators.map((c, j) => (j === i ? a : c)));
-  const moveCreator = (i: number, delta: number) => {
-    const next = [...draft.creators];
+  const moveIn = (key: "creators" | "contributors", i: number, delta: number) => {
+    const next = [...draft[key]];
     [next[i], next[i + delta]] = [next[i + delta], next[i]];
-    set("creators", next);
+    set(key, next);
   };
+  const setContributor = (i: number, a: Agent) => set("contributors", draft.contributors.map((c, j) => (j === i ? a : c)));
+  const setGrant = (i: number, g: Grant) => set("funding", draft.funding.map((x, j) => (j === i ? g : x)));
 
   const save = async () => {
     setBusy(true);
@@ -237,7 +264,7 @@ export function DatasetPanel({ info, filename, fileSize, fileMd5, onSave }: Prop
                   index={i}
                   count={draft.creators.length}
                   onChange={(next) => setCreator(i, next)}
-                  onMove={(delta) => moveCreator(i, delta)}
+                  onMove={(delta) => moveIn("creators", i, delta)}
                   onRemove={() => set("creators", draft.creators.filter((_, j) => j !== i))}
                 />
               ))}
@@ -337,10 +364,130 @@ export function DatasetPanel({ info, filename, fileSize, fileMd5, onSave }: Prop
                 </label>
               )}
             </fieldset>
+
+            <fieldset>
+              <legend>Contributors <span className="hint-label">data collectors, curators, distributors…</span></legend>
+              {draft.contributors.map((a, i) => (
+                <AgentRow
+                  key={i}
+                  agent={a}
+                  index={i}
+                  count={draft.contributors.length}
+                  roles={vocabularies?.contributor_role ?? []}
+                  onChange={(next) => setContributor(i, next)}
+                  onMove={(delta) => moveIn("contributors", i, delta)}
+                  onRemove={() => set("contributors", draft.contributors.filter((_, j) => j !== i))}
+                />
+              ))}
+              <div className="row" style={{ gap: 8 }}>
+                <button type="button" className="btn add" onClick={() => set("contributors", [...draft.contributors, emptyAgent("person")])}><IconPlus /> Person</button>
+                <button type="button" className="btn add" onClick={() => set("contributors", [...draft.contributors, emptyAgent("organization")])}><IconPlus /> Organisation</button>
+              </div>
+            </fieldset>
+
+            <fieldset>
+              <legend>Coverage</legend>
+              <div className="grid3">
+                {dateField("Period from", draft.temporal_start, (v) => set("temporal_start", v))}
+                {dateField("Period to", draft.temporal_end, (v) => set("temporal_end", v))}
+              </div>
+              <div className="field">
+                <span>Geographic coverage</span>
+                <KeywordInput keywords={draft.spatial} onChange={(k) => set("spatial", k)} placeholder="Type a country or region and press Enter" />
+                <small>The period and places the data are about, not when they were collected.</small>
+              </div>
+            </fieldset>
+
+            <fieldset>
+              <legend>Funding</legend>
+              {draft.funding.map((g, i) => (
+                <div key={i} className="agent-row">
+                  <div className="agent-head">
+                    <span className="agent-num">{i + 1}</span>
+                    <span className="grow" />
+                    <button type="button" className="iconbtn" title="Remove" onClick={() => set("funding", draft.funding.filter((_, j) => j !== i))}><IconX /></button>
+                  </div>
+                  <div className="grid2">
+                    <label className="field">
+                      <span>Funder</span>
+                      <input value={g.funder} placeholder="Funding organisation" onChange={(e) => setGrant(i, { ...g, funder: e.target.value })} />
+                    </label>
+                    <label className="field">
+                      <span>Funder ROR</span>
+                      <input value={g.funder_id} placeholder="https://ror.org/…" onChange={(e) => setGrant(i, { ...g, funder_id: e.target.value })} />
+                    </label>
+                    <label className="field">
+                      <span>Award number</span>
+                      <input value={g.award} onChange={(e) => setGrant(i, { ...g, award: e.target.value })} />
+                    </label>
+                    <label className="field">
+                      <span>Grant or project name</span>
+                      <input value={g.title} onChange={(e) => setGrant(i, { ...g, title: e.target.value })} />
+                    </label>
+                  </div>
+                </div>
+              ))}
+              <div className="row">
+                <button type="button" className="btn add" onClick={() => set("funding", [...draft.funding, emptyGrant()])}><IconPlus /> Grant</button>
+              </div>
+            </fieldset>
+
+            <fieldset>
+              <legend>Methodology <span className="hint-label">written as the CDIF provenance activity</span></legend>
+              <label className="field">
+                <span>Data collection</span>
+                <textarea rows={3} value={m.description} placeholder="How the data were collected: fieldwork, organisation, response" onChange={(e) => setM("description", e.target.value)} />
+              </label>
+              <div className="grid3">
+                {dateField("Collection from", m.collection_start, (v) => setM("collection_start", v))}
+                {dateField("Collection to", m.collection_end, (v) => setM("collection_end", v))}
+              </div>
+              <div className="field">
+                <span>Mode of collection <span className="hint-label">DDI vocabulary</span></span>
+                <div className="kw-box">
+                  {m.modes.map((code) => (
+                    <span key={code} className="kw">
+                      {modeLabel(code)}
+                      <button type="button" aria-label={`Remove ${modeLabel(code)}`} onClick={() => setM("modes", m.modes.filter((x) => x !== code))}>×</button>
+                    </span>
+                  ))}
+                  <select
+                    className="kw-select"
+                    aria-label="Add a mode of collection"
+                    value=""
+                    onChange={(e) => { if (e.target.value && !m.modes.includes(e.target.value)) setM("modes", [...m.modes, e.target.value]); }}
+                  >
+                    <option value="">{m.modes.length ? "Add another…" : "Choose a mode…"}</option>
+                    {(vocabularies?.mode_of_collection ?? []).filter((t) => !m.modes.includes(t.code)).map((t) => (
+                      <option key={t.code} value={t.code}>{t.label}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <label className="field">
+                <span>Sampling procedure <span className="hint-label">DDI vocabulary</span></span>
+                <select value={m.sampling} onChange={(e) => setM("sampling", e.target.value)}>
+                  <option value="">Not given</option>
+                  {(vocabularies?.sampling_procedure ?? []).map((t) => <option key={t.code} value={t.code}>{t.label}</option>)}
+                </select>
+              </label>
+              <label className="field">
+                <span>Sampling details</span>
+                <textarea rows={2} value={m.sampling_description} placeholder="Frame, stages, strata, sample size" onChange={(e) => setM("sampling_description", e.target.value)} />
+              </label>
+              <label className="field">
+                <span>Universe</span>
+                <input value={m.universe} placeholder="e.g. Persons aged 15 and over resident in private households" onChange={(e) => setM("universe", e.target.value)} />
+              </label>
+              <label className="field">
+                <span>Questionnaire or instrument</span>
+                <input value={m.instrument} placeholder="URL or name" onChange={(e) => setM("instrument", e.target.value)} />
+              </label>
+            </fieldset>
           </form>
 
           <aside className="ds-check">
-            <h3>CDIF discovery <span className="count">{done}/{checks.length}</span></h3>
+            <h3>CDIF checklist <span className="count">{done}/{checks.length}</span></h3>
             <ul>
               {checks.map((c) => (
                 <li key={c.label} className={c.ok ? "ok" : c.level}>

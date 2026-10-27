@@ -13,7 +13,7 @@ import { OptionsPopover } from "./components/OptionsPopover";
 import { StatisticsPanel } from "./components/StatisticsPanel";
 import { Toasts, type Toast } from "./components/Toasts";
 import { UploadScreen } from "./components/UploadScreen";
-import type { Concept, DatasetInfo, EnrichKind, FileInfo, JsonLdDoc, Options, OutputFormat, PreviewPage, Statistics, Suggestion } from "./types";
+import type { Concept, DatasetInfo, Vocabularies, EnrichKind, FileInfo, JsonLdDoc, Options, OutputFormat, PreviewPage, Statistics, Suggestion } from "./types";
 import { ALL_STAT_NAMES, ENRICH_KINDS, sameFunctions } from "./types";
 
 interface Edit {
@@ -829,7 +829,7 @@ export default function App() {
               loading={pageLoading}
             />
           ) : view === "dataset" ? (
-            <DatasetPanel info={info.info} filename={info.filename} fileSize={info.file_size} fileMd5={info.file_md5} onSave={saveDatasetInfo} />
+            <DatasetPanel info={info.info} filename={info.filename} fileSize={info.file_size} fileMd5={info.file_md5} vocabularies={apiInfo?.vocabularies as Vocabularies | undefined} onSave={saveDatasetInfo} />
           ) : (
             <StatisticsPanel
               stats={stats}

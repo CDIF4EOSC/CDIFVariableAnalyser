@@ -87,6 +87,24 @@ INFO = {
     ],
     "publisher": {"name": "Sikt", "kind": "organization", "identifier": "https://ror.org/04qtnsw81"},
     "record_id": "https://example.org/records/ess11-subset",
+    "contributors": [
+        {"name": "Fieldwork Ltd", "kind": "organization", "role": "DataCollector"},
+        {"name": "Roe, Richard", "role": "NoSuchRole"},
+        {"name": "Doe, John"},
+    ],
+    "temporal_start": "2023-01-01",
+    "temporal_end": "2024-12-31",
+    "spatial": ["Norway", " ", "Germany"],
+    "funding": [{"funder": "European Commission", "funder_id": "https://ror.org/00k4n6c32", "award": "101057264"}],
+    "methodology": {
+        "collection_start": "2023-04-01",
+        "collection_end": "2024-06",
+        "modes": ["Interview.FaceToFace.CAPIorCAMI"],
+        "sampling": "Probability.Multistage",
+        "sampling_description": "Random probability samples, multi-stage in most countries.",
+        "universe": "Persons aged 15 and over in private households",
+        "instrument": "https://example.org/questionnaire.pdf",
+    },
 }
 
 
@@ -207,3 +225,42 @@ def test_file_facts_and_download_url(client):  # noqa: F811
     assert dist["schema:contentSize"] == str(info["file_size"])
     assert dist["spdx:checksum"]["spdx:checksumValue"] == info["file_md5"]
     assert "cdif:isDescribedBy_StatisticsCollection" in _var(doc, "ppltrst")
+
+
+
+def test_contributors_coverage_funding_methodology(client):  # noqa: F811
+    fid = _upload(client).json()["file_id"]
+    assert client.put(f"/api/files/{fid}/info", json=INFO).status_code == 200
+    doc = client.post(f"/api/files/{fid}/output", params={"format": "cdif"}, json={}).json()
+
+    collector, curator, plain = doc["schema:contributor"]
+    assert collector["@type"] == ["schema:Role"] and collector["schema:roleName"]["schema:termCode"] == "DataCollector"
+    assert collector["schema:contributor"]["@type"] == ["schema:Organization"]
+    assert curator["schema:roleName"] == "NoSuchRole"  # an unknown code stays a string
+    assert plain["@type"] == ["schema:Person"]  # no role: the person itself
+
+    interval, iso = doc["schema:temporalCoverage"]
+    assert interval["time:hasBeginning"]["time:inXSDDate"] == "2023-01-01" and iso == "2023-01-01/2024-12-31"
+    assert [p["schema:name"] for p in doc["schema:spatialCoverage"]] == ["Norway", "Germany"]
+    grant = doc["schema:funding"][0]
+    assert grant["schema:funder"]["schema:identifier"] == "https://ror.org/00k4n6c32"
+    assert grant["schema:identifier"]["schema:value"] == "101057264"
+
+    mode = doc["schema:measurementTechnique"][0]
+    assert mode["schema:termCode"] == "Interview.FaceToFace.CAPIorCAMI" and mode["schema:identifier"].startswith(
+        "http://rdf-vocabulary.ddialliance.org/cv/ModeOfCollection/")
+    activity = doc["prov:wasGeneratedBy"][0]
+    assert activity["@type"] == ["schema:Action", "prov:Activity"]
+    assert activity["schema:startTime"] == "2023-04-01" and activity["schema:object"].startswith("Persons")
+    assert activity["prov:used"] == [{"@id": "https://example.org/questionnaire.pdf"}]
+    howto = activity["schema:actionProcess"]
+    assert howto["schema:name"] == "Probability: Multistage"
+    assert howto["schema:additionalType"][0]["schema:termCode"] == "Probability.Multistage"
+    conforms = [c["@id"] for c in doc["schema:subjectOf"]["dcterms:conformsTo"]]
+    assert "https://w3id.org/cdif/provenance/1.1" in conforms
+    assert "vocabularies" in client.get("/api/info").json()
+
+
+def test_no_activity_without_methodology(cdif):
+    assert "prov:wasGeneratedBy" not in cdif
+    assert "https://w3id.org/cdif/provenance/1.1" not in [c["@id"] for c in cdif["schema:subjectOf"]["dcterms:conformsTo"]]

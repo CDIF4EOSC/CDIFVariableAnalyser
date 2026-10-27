@@ -8,8 +8,10 @@ discovery terms it finds there. Only filled-in fields are written.
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 
-from ..models import Agent, DatasetMeta
+from .. import vocabularies as cv
+from ..models import Agent, DatasetMeta, Grant, Methodology
 
 _ORCID_RE = re.compile(r"^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$")  # 0000-0002-1825-0097
 _ROR_RE = re.compile(r"^0[a-z0-9]{6}\d{2}$")  # 05xg72x27
@@ -51,6 +53,84 @@ def agent_node(agent: Agent) -> dict:
     return node
 
 
+def _term(terms: tuple[cv.Term, ...], term_set: str, code: str) -> dict | str:
+    """A vocabulary code -> schema:DefinedTerm; an unknown code stays a plain string."""
+    term = cv.find(terms, code)
+    if term is None:
+        return code
+    node: dict = {"@type": ["schema:DefinedTerm"], "schema:name": term.label,
+                  "schema:termCode": term.code, "schema:inDefinedTermSet": term_set}
+    if term.uri:
+        node["schema:identifier"] = term.uri
+    return node
+
+
+def contributor_node(agent: Agent) -> dict:
+    """A contributor with a role -> schema:Role around the person or organisation, as CDIF
+    nests it; without a role, the agent itself."""
+    if not agent.role:
+        return agent_node(agent)
+    return {
+        "@type": ["schema:Role"],
+        "schema:roleName": _term(cv.CONTRIBUTOR_ROLES, cv.CONTRIBUTOR_ROLE_SET, agent.role),
+        "schema:contributor": agent_node(agent),
+    }
+
+
+def _interval(start: str, end: str) -> list:
+    """A period -> an ISO 8601 interval string, plus a time:ProperInterval when both ends are
+    full dates (time:inXSDDate takes an xsd:date)."""
+    out: list = [f"{start or '..'}/{end or '..'}"]
+    if len(start) == 10 and len(end) == 10:
+        out.insert(0, {
+            "@type": ["time:ProperInterval"],
+            "time:hasBeginning": {"@type": ["time:Instant"], "time:inXSDDate": start},
+            "time:hasEnd": {"@type": ["time:Instant"], "time:inXSDDate": end},
+        })
+    return out
+
+
+def grant_node(grant: Grant) -> dict:
+    node: dict = {"@type": ["schema:MonetaryGrant"]}
+    if grant.title:
+        node["schema:name"] = grant.title
+    if grant.award:
+        node["schema:identifier"] = {"@type": ["schema:PropertyValue"], "schema:propertyID": "Award number",
+                                     "schema:value": grant.award}
+    if grant.funder or grant.funder_id:
+        funder: dict = {"@type": ["schema:Organization"], "schema:name": grant.funder or grant.funder_id}
+        _identify(funder, grant.funder_id)
+        node["schema:funder"] = funder
+    return node
+
+
+def activity_node(m: Methodology) -> dict:
+    """The data collection -> a schema:Action / prov:Activity (CDIF provenance). The universe
+    is what the action is carried out on (schema:object); the sampling procedure is its
+    method (schema:actionProcess, a schema:HowTo)."""
+    node: dict = {"@type": ["schema:Action", "prov:Activity"], "schema:name": "Data collection"}
+    if m.description:
+        node["schema:description"] = m.description
+    if m.collection_start:
+        node["schema:startTime"] = m.collection_start
+    if m.collection_end:
+        node["schema:endTime"] = m.collection_end
+    if m.universe:
+        node["schema:object"] = m.universe
+    if m.instrument:
+        node["prov:used"] = [{"@id": m.instrument} if _iri(m.instrument) else m.instrument]
+    if m.sampling or m.sampling_description:
+        term = cv.find(cv.SAMPLING_PROCEDURE, m.sampling)
+        howto: dict = {"@type": ["schema:HowTo"],
+                       "schema:name": term.label if term else (m.sampling or "Sampling procedure")}
+        if m.sampling_description:
+            howto["schema:description"] = m.sampling_description
+        if m.sampling:
+            howto["schema:additionalType"] = [_term(cv.SAMPLING_PROCEDURE, cv.SAMPLING_PROCEDURE_SET, m.sampling)]
+        node["schema:actionProcess"] = howto
+    return node
+
+
 def dataset_header(meta: DatasetMeta) -> dict:
     """Header entries for ``convert_document``: the editor's dataset description and the
     size and checksum of the uploaded file. Only what is known is written."""
@@ -85,4 +165,21 @@ def dataset_header(meta: DatasetMeta) -> dict:
         header["schema:creator"] = {"@list": creators}
     if info.publisher and info.publisher.name.strip():
         header["schema:publisher"] = agent_node(info.publisher)
+    contributors = [contributor_node(a) for a in info.contributors if a.name.strip()]
+    if contributors:
+        header["schema:contributor"] = contributors
+    if info.temporal_start or info.temporal_end:
+        header["schema:temporalCoverage"] = _interval(info.temporal_start, info.temporal_end)
+    places = [p.strip() for p in info.spatial if p.strip()]
+    if places:
+        header["schema:spatialCoverage"] = [{"@type": ["schema:Place"], "schema:name": p} for p in places]
+    grants = [grant_node(g) for g in info.funding if g.funder or g.funder_id or g.award or g.title]
+    if grants:
+        header["schema:funding"] = grants
+    m = info.methodology
+    if m.modes:
+        header["schema:measurementTechnique"] = [
+            _term(cv.MODE_OF_COLLECTION, cv.MODE_OF_COLLECTION_SET, code) for code in m.modes]
+    if not replace(m, modes=[]).is_empty():  # the modes alone are measurementTechnique
+        header["prov:wasGeneratedBy"] = [activity_node(m)]
     return header

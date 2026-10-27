@@ -137,6 +137,34 @@ class Agent:
     affiliation: str = ""
     affiliation_id: str = ""  # ROR of the affiliation
     email: str = ""
+    role: str = ""  # contributors only: a DataCite contributorType, e.g. DataCollector
+
+
+@dataclass
+class Grant:
+    """Funding for the dataset: who paid, and the award."""
+
+    funder: str = ""
+    funder_id: str = ""  # ROR
+    award: str = ""  # award number
+    title: str = ""  # name of the grant or project
+
+
+@dataclass
+class Methodology:
+    """How the data were collected: the CDIF provenance activity."""
+
+    description: str = ""
+    collection_start: str = ""  # ISO 8601
+    collection_end: str = ""
+    modes: list[str] = field(default_factory=list)  # DDI ModeOfCollection codes
+    sampling: str = ""  # a DDI SamplingProcedure code
+    sampling_description: str = ""
+    universe: str = ""  # the population the data describe
+    instrument: str = ""  # questionnaire or other instrument: a URL or a name
+
+    def is_empty(self) -> bool:
+        return not any(v for v in asdict(self).values())
 
 
 @dataclass
@@ -161,6 +189,12 @@ class DatasetInfo:
     date_modified: str = ""
     creators: list[Agent] = field(default_factory=list)
     publisher: Agent | None = None
+    contributors: list[Agent] = field(default_factory=list)  # each with a role
+    temporal_start: str = ""  # the period the data are about
+    temporal_end: str = ""
+    spatial: list[str] = field(default_factory=list)  # place names, e.g. countries
+    funding: list[Grant] = field(default_factory=list)
+    methodology: Methodology = field(default_factory=Methodology)
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "DatasetInfo":
@@ -171,6 +205,11 @@ class DatasetInfo:
                 "keywords": list(d.get("keywords", [])),
                 "creators": [Agent(**a) for a in d.get("creators", [])],
                 "publisher": Agent(**publisher) if publisher else None,
+                "contributors": [Agent(**a) for a in d.get("contributors", [])],
+                "spatial": list(d.get("spatial", [])),
+                "funding": [Grant(**g) for g in d.get("funding", [])],
+                "methodology": Methodology(**{**d.get("methodology", {}),
+                                              "modes": list(d.get("methodology", {}).get("modes", []))}),
             }
         )
 
