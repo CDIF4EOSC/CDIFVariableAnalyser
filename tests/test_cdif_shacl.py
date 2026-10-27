@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -50,12 +51,17 @@ def _results(doc: dict, shapes: Path) -> list[tuple[str, str]]:
 @pytest.fixture(scope="module")
 def documents(ess11):
     doc = build_document(ess11, options=GenerateOptions(max_rows=0))
-    filled = {**doc, **dataset_header(DatasetInfo.from_dict(INFO))}
-    return {"empty": convert_document(doc, "ESS11-subset"), "filled": convert_document(filled, "ESS11-subset")}
+    header = dataset_header(replace(ess11.meta, info=DatasetInfo.from_dict(INFO)))
+    with_stats = build_document(ess11, options=GenerateOptions(max_rows=0, include_statistics=True, statistics_weight="dweight"))
+    return {
+        "empty": convert_document(doc, "ESS11-subset"),
+        "filled": convert_document({**doc, **header}, "ESS11-subset"),
+        "statistics": convert_document({**with_stats, **header}, "ESS11-subset"),
+    }
 
 
 @pytest.mark.parametrize("profile", PROFILES)
-@pytest.mark.parametrize("which", ["empty", "filled"])
+@pytest.mark.parametrize("which", ["empty", "filled", "statistics"])
 def test_no_violations(documents, which, profile):
     violations = [m for sev, m in _results(documents[which], _shapes(profile)) if sev == "Violation"]
     assert violations == []

@@ -60,6 +60,7 @@ export interface DatasetInfo {
   description: string;
   identifier: string;
   url: string;
+  content_url: string;
   record_id: string;
   version: string;
   license: string;
@@ -84,6 +85,8 @@ export interface FileInfo {
   variables: Variable[];
   preview: Record<string, string>[];
   info: DatasetInfo;
+  file_size: number | null;
+  file_md5: string | null;
 }
 
 export interface PreviewPage {

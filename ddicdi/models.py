@@ -151,6 +151,7 @@ class DatasetInfo:
     description: str = ""
     identifier: str = ""  # DOI, handle or URL of the dataset
     url: str = ""  # landing page
+    content_url: str = ""  # where the data file itself can be downloaded
     record_id: str = ""  # IRI of the metadata record (the CDIF document's @id)
     version: str = ""
     license: str = ""  # licence URI
@@ -188,6 +189,9 @@ class DatasetMeta:
     # import only when qsv kept them), rather than written as empty cells.
     sentinels_in_data: bool = False
     info: DatasetInfo = field(default_factory=DatasetInfo)
+    # The uploaded file as it arrived, for the CDIF distribution.
+    file_size: int | None = None
+    file_md5: str | None = None
 
     # -- convenience ------------------------------------------------------------
 
@@ -247,6 +251,8 @@ class DatasetMeta:
             sentinels_in_data=d.get("sentinels_in_data", d["file_format"] in ("csv", "parquet")),
             roles=roles,
             info=DatasetInfo.from_dict(d.get("info", {})),
+            file_size=d.get("file_size"),
+            file_md5=d.get("file_md5"),
         )
 
 

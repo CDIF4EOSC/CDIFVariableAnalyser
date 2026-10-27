@@ -85,7 +85,7 @@ def _generate(store: UploadStore, file_id: str, req: GenerateRequest, fmt: Outpu
     else:
         editing.ensure_roles(dataset.meta)
     if fmt == "cdif":
-        return _download(_cdif(dataset), dataset.meta.datafile, "_CDIF.json")
+        return _download(_cdif(dataset, req), dataset.meta.datafile, "_CDIF.json")
     return _download(_jsonld(dataset, req), dataset.meta.datafile)
 
 
@@ -104,11 +104,20 @@ def _jsonld(dataset: Dataset, req: GenerateRequest | OutputRequest) -> str:
     )
 
 
-def _cdif(dataset: Dataset) -> str:
-    """The document converted to CDIF. CDIF is metadata only, so no rows or statistics go in."""
-    doc = build_document(dataset, options=GenerateOptions(max_rows=0))
+def _cdif(dataset: Dataset, req: GenerateRequest | OutputRequest) -> str:
+    """The document converted to CDIF: metadata only, so no data rows; statistics when asked for."""
+    doc = _stats(  # statistics are the only part that can fail on a bad weight or qsv
+        build_document,
+        dataset,
+        options=GenerateOptions(
+            max_rows=0,
+            include_statistics=req.include_statistics,
+            statistics_weight=req.statistics_weight,
+            statistics_include=req.statistics_include,
+        ),
+    )
     # The dataset description from the editor goes in as the header the converter reads.
-    doc.update(dataset_header(dataset.meta.info))
+    doc.update(dataset_header(dataset.meta))
     cdif = convert_document(doc, Path(dataset.meta.datafile).stem)
     return json.dumps(cdif, indent=2, ensure_ascii=False)
 
@@ -229,7 +238,7 @@ def output(
     """Editor preview: the current document with the stored roles, not as a download."""
     dataset = _load(store, file_id)
     editing.ensure_roles(dataset.meta)
-    content = _cdif(dataset) if format == "cdif" else _jsonld(dataset, req)
+    content = _cdif(dataset, req) if format == "cdif" else _jsonld(dataset, req)
     return Response(content=content, media_type="application/ld+json")
 
 

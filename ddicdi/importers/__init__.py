@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from datetime import date
 from pathlib import Path
 
@@ -35,7 +36,17 @@ def import_file(path: Path, work_dir: Path, qsv: Qsv | None = None, datafile: st
     else:
         raise ValueError(f"Unsupported file type {ext!r}. Supported: {sorted(SUPPORTED_EXTENSIONS)}")
     meta.info = suggested_info(meta)
+    meta.file_size = path.stat().st_size
+    meta.file_md5 = _md5(path)
     return Dataset(meta, out_csv, qsv)
+
+
+def _md5(path: Path) -> str:
+    digest = hashlib.md5()
+    with path.open("rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def suggested_info(meta: DatasetMeta) -> DatasetInfo:

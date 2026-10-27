@@ -76,6 +76,7 @@ class DatasetInfoIO(BaseModel):
     description: str = ""
     identifier: str = Field("", description="DOI, handle or URL of the dataset")
     url: str = Field("", description="landing page")
+    content_url: str = Field("", description="download URL of the data file")
     record_id: str = Field("", description="IRI of the metadata record, the CDIF document's @id")
     version: str = ""
     license: str = Field("", description="licence URI, e.g. https://creativecommons.org/licenses/by/4.0/")
@@ -109,6 +110,8 @@ class FileInfo(BaseModel):
     variables: list[VariableOut]
     preview: list[dict[str, str]] = Field(default_factory=list)
     info: DatasetInfoIO = Field(default_factory=DatasetInfoIO)
+    file_size: int | None = Field(None, description="size of the uploaded file in bytes")
+    file_md5: str | None = Field(None, description="MD5 checksum of the uploaded file")
 
     @classmethod
     def from_meta(cls, file_id: str, meta: DatasetMeta, preview: list[dict[str, str]]) -> "FileInfo":
@@ -126,6 +129,8 @@ class FileInfo(BaseModel):
             variables=[VariableOut.from_variable(v, roles[v.name]) for v in meta.variables],
             preview=preview,
             info=DatasetInfoIO.from_info(meta.info),
+            file_size=meta.file_size,
+            file_md5=meta.file_md5,
         )
 
 

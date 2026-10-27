@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 
-from ..models import Agent, DatasetInfo
+from ..models import Agent, DatasetMeta
 
 _ORCID_RE = re.compile(r"^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$")  # 0000-0002-1825-0097
 _ROR_RE = re.compile(r"^0[a-z0-9]{6}\d{2}$")  # 05xg72x27
@@ -51,9 +51,15 @@ def agent_node(agent: Agent) -> dict:
     return node
 
 
-def dataset_header(info: DatasetInfo) -> dict:
-    """Header entries for ``convert_document``; empty when nothing was entered."""
+def dataset_header(meta: DatasetMeta) -> dict:
+    """Header entries for ``convert_document``: the editor's dataset description and the
+    size and checksum of the uploaded file. Only what is known is written."""
+    info = meta.info
     header: dict = {}
+    if meta.file_size is not None:
+        header["schema:contentSize"] = meta.file_size
+    if meta.file_md5:
+        header["schema:checksum"] = {"schema:algorithm": "md5", "schema:checksumValue": meta.file_md5}
     if info.record_id:
         header["@id"] = info.record_id
     for key, val in (
@@ -63,6 +69,7 @@ def dataset_header(info: DatasetInfo) -> dict:
         ("dct:license", {"@id": info.license} if info.license else None),
         ("dct:language", info.language),
         ("schema:url", info.url),
+        ("schema:contentUrl", info.content_url),
         ("schema:version", info.version),
         ("schema:datePublished", info.date_published),
         ("schema:dateModified", info.date_modified),

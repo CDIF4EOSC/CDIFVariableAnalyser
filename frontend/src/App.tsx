@@ -753,7 +753,7 @@ export default function App() {
                 outFormat === f
                   ? `${outputOpen ? "Hide" : "Show"} the ${FORMAT_LABEL[f]} output panel`
                   : f === "cdif"
-                    ? "Preview and download CDIF, converted from DDI-CDI (metadata only: no data rows or statistics)"
+                    ? "Preview and download CDIF, converted from DDI-CDI (no data rows; statistics when they are switched on in Options)"
                     : "Preview and download DDI-CDI"
               }
               onClick={() => pickFormat(f)}
@@ -829,7 +829,7 @@ export default function App() {
               loading={pageLoading}
             />
           ) : view === "dataset" ? (
-            <DatasetPanel info={info.info} filename={info.filename} onSave={saveDatasetInfo} />
+            <DatasetPanel info={info.info} filename={info.filename} fileSize={info.file_size} fileMd5={info.file_md5} onSave={saveDatasetInfo} />
           ) : (
             <StatisticsPanel
               stats={stats}

@@ -5,8 +5,13 @@ import { IconPlus, IconX } from "./Icons";
 interface Props {
   info: DatasetInfo;
   filename: string;
+  fileSize: number | null;
+  fileMd5: string | null;
   onSave: (next: DatasetInfo) => Promise<void>;
 }
+
+const formatBytes = (n: number) =>
+  n < 1024 ? `${n} B` : n < 1024 ** 2 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1024 ** 2).toFixed(1)} MB`;
 
 const LICENSES: { uri: string; label: string; group: string }[] = [
   { uri: "https://creativecommons.org/licenses/by/4.0/", label: "CC BY 4.0", group: "Creative Commons" },
@@ -46,6 +51,7 @@ export function checklist(d: DatasetInfo) {
     { label: "Description", ok: Boolean(d.description.trim()), level: "recommended" },
     { label: "Keywords", ok: d.keywords.some((k) => k.trim()), level: "recommended" },
     { label: "Persistent identifier", ok: Boolean(d.identifier.trim()), level: "recommended", note: "a DOI is best" },
+    { label: "Download URL", ok: Boolean(d.content_url.trim()), level: "recommended", note: "the data file's own link" },
     { label: "Date published", ok: Boolean(d.date_published), level: "suggested" },
     { label: "Publisher", ok: Boolean(d.publisher?.name.trim()), level: "suggested" },
   ] as const;
@@ -145,7 +151,7 @@ function KeywordInput({ keywords, onChange }: { keywords: string[]; onChange: (k
   );
 }
 
-export function DatasetPanel({ info, filename, onSave }: Props) {
+export function DatasetPanel({ info, filename, fileSize, fileMd5, onSave }: Props) {
   const [draft, setDraft] = useState<DatasetInfo>(info);
   const [busy, setBusy] = useState(false);
   const isPreset = (uri: string) => LICENSES.some((l) => l.uri === uri);
@@ -276,6 +282,14 @@ export function DatasetPanel({ info, filename, onSave }: Props) {
                   <input value={draft.url} placeholder="https://…" onChange={(e) => set("url", e.target.value)} />
                 </label>
               </div>
+              <label className="field">
+                <span>Download URL of the data file</span>
+                <input value={draft.content_url} placeholder="https://…/datafile" onChange={(e) => set("content_url", e.target.value)} />
+                <small>
+                  Where {filename} itself can be fetched; CDIF writes “missing” otherwise.
+                  {fileSize !== null && <> The output also gives its size ({formatBytes(fileSize)}){fileMd5 && <> and MD5 checksum <code>{fileMd5}</code></>}.</>}
+                </small>
+              </label>
               <label className="field">
                 <span>Metadata record IRI <span className="hint-label">optional</span></span>
                 <input value={draft.record_id} placeholder={`urn:ddi-cdi:${filename.replace(/\.[^.]+$/, "")}`} onChange={(e) => set("record_id", e.target.value)} />

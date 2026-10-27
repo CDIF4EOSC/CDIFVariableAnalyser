@@ -41,6 +41,14 @@ DDI-CDI 1.1beta JSON-LD that DDI-CDI Studio writes. Changes against upstream
   - TextMapping / LocatorMapping decimalPositions, scale, numberPattern,
     defaultValue and isRequired are copied, and nullSequence when it is a
     single string.
+  - StatisticsCollection / Statistics / CategoryStatistics -> an inline
+    cdif:isDescribedBy_StatisticsCollection on the variable it describes.
+    CDIF hangs CategoryStatistics under a Statistics bundle, so the category
+    statistics of each kind (frequency, percentage) are grouped into one
+    Statistics bundle whose own statistic is their total. The minimum and
+    maximum also become schema:minValue / schema:maxValue.
+  - A header schema:contentUrl is the distribution's contentUrl (before
+    prov:wasDerivedFrom).
   - Value domains are labelled: cdif:displayLabel on the Substantive /
     SentinelValueDomain, schema:name on the EnumerationDomain.
   - The catalog record carries schema:sdDatePublished (the conversion date).
@@ -79,6 +87,9 @@ indexed by its ``@id`` and references are followed by id, the same way
                                                  cdif:LocatorMapping)
   WideDataStructure + components + positions  -> cdi:isStructuredBy
   PrimaryKey                                  -> cdif:has_PrimaryKey (cdif:Key)
+
+  StatisticsCollection + Statistics           -> cdif:isDescribedBy_StatisticsCollection
+    + CategoryStatistics                         on the variable
 
 Out of scope: DataPoint / DataPointPosition / InstanceValue (a sample of the
 data values) - CDIF is a metadata framework.
@@ -260,7 +271,67 @@ def value_domain(domain, index, code_order, substantive, variable):
                                      "cdif:references": scheme}}
 
 
-def build_variable(iv, roles, index, code_order):
+def build_statistic(stat):
+    """A DDI-CDI Statistic value object -> its CDIF form (no identity)."""
+    return {"cdi:" + key: stat[key]
+            for key in ("content", "isWeighted", "typeOfNumericValue", "computationBase")
+            if key in stat}
+
+
+def build_category(cat):
+    """A Category -> the minimal inline cdi:Category CDIF wants as a CategoryStatistics target."""
+    if cat is None:
+        return None
+    node = {"@type": ["cdi:Category"], "@id": cat["@id"]}
+    name = value(cat, "name", "name")
+    if name:
+        node["cdif:name"] = str(name)
+    label = label_of(cat)
+    if label:
+        node["cdif:displayLabel"] = [str(label)]
+    return node
+
+
+def build_statistics_collection(coll, members, index):
+    """StatisticsCollection and the Statistics / CategoryStatistics that name it
+    -> a cdi:StatisticsCollection node, or None when it holds nothing."""
+    bundles = []
+    by_kind = {}
+    for st in members:
+        kind = value(st, "typeOfStatistic", "entryValue")
+        stats = [build_statistic(x) for x in as_list(st.get("statistic"))]
+        if not stats:
+            continue
+        if st["@type"] == "CategoryStatistics":
+            node = {"@type": ["cdi:CategoryStatistics"], "@id": st["@id"],
+                    "cdif:typeOfStatistic": kind, "cdi:statistic": stats}
+            category = build_category(index.get(st.get("for")))
+            if category:
+                node["cdi:for"] = category
+            by_kind.setdefault(kind, []).append(node)
+            continue
+        node = {"@type": ["cdi:Statistics"], "@id": st["@id"],
+                "cdif:typeOfStatistic": kind, "cdi:statistic": stats}
+        if st.get("hasWeight"):
+            node["cdi:hasWeight"] = {"@id": st["hasWeight"]}
+        bundles.append(node)
+    for kind, cats in by_kind.items():
+        first = cats[0]["cdi:statistic"][0]
+        total = dict(first, **{"cdi:content": sum(c["cdi:statistic"][0].get("cdi:content", 0)
+                                                    for c in cats)})
+        bundles.append({"@type": ["cdi:Statistics"], "@id": f"{coll['@id']}-{kind}",
+                        "cdif:typeOfStatistic": kind, "cdi:statistic": [total],
+                        "cdif:has_CategoryStatistics": cats})
+    if not bundles:
+        return None
+    node = {"@type": ["cdi:StatisticsCollection"], "@id": coll["@id"],
+            "cdif:has_Statistics": bundles}
+    if coll.get("hasWeight"):
+        node["cdi:hasWeight"] = {"@id": coll["hasWeight"]}
+    return node
+
+
+def build_variable(iv, roles, index, code_order, statistics=None):
     name = value(iv, "name", "name") or iv["@id"].lstrip("#")
     vm = {"@type": ["schema:PropertyValue", "cdi:InstanceVariable"],
           "@id": iv["@id"], "schema:name": name}
@@ -303,6 +374,16 @@ def build_variable(iv, roles, index, code_order):
             sentinels.append(domain)
     if sentinels:
         vm["cdi:takesSentinelValuesFrom"] = sentinels
+    coll = index.get(iv.get("isDescribedBy"))
+    if coll is not None and coll.get("@type") == "StatisticsCollection":
+        node = build_statistics_collection(coll, (statistics or {}).get(coll["@id"], []), index)
+        if node:
+            vm["cdif:isDescribedBy_StatisticsCollection"] = node
+            for bundle in node["cdif:has_Statistics"]:
+                key = {"minimum": "schema:minValue", "maximum": "schema:maxValue"}.get(
+                    bundle["cdif:typeOfStatistic"])
+                if key and "cdi:content" in bundle["cdi:statistic"][0]:
+                    vm[key] = bundle["cdi:statistic"][0]["cdi:content"]
     return vm
 
 
@@ -418,7 +499,7 @@ def build_distribution(header, objects, index, nvars):
                             or header.get("dct:title"))}
     # The export records the file it read as prov:wasDerivedFrom; for a
     # Dataverse file that is its download (api/access/datafile) URL.
-    source = value(header, "prov:wasDerivedFrom", "@id")
+    source = header.get("schema:contentUrl") or value(header, "prov:wasDerivedFrom", "@id")
     dist["schema:contentUrl"] = source or NIL_MISSING
     if ttd.get("isDelimited") and ttd.get("delimiter") == ",":
         dist["schema:encodingFormat"] = ["text/csv"]
@@ -498,7 +579,10 @@ def convert_document(header, stem, explicit_id=None):
     code_order = position_map(objects, "CodePosition")
 
     roles = build_role_map(objects)
-    variables = [build_variable(o, roles, index, code_order)
+    statistics = {}
+    for o in by_type(objects, "Statistics", "CategoryStatistics"):
+        statistics.setdefault(o.get("has_StatisticsCollection"), []).append(o)
+    variables = [build_variable(o, roles, index, code_order, statistics)
                  for o in by_type(objects, "InstanceVariable")]
 
     iri = explicit_id or header.get("@id") or f"urn:ddi-cdi:{stem}"

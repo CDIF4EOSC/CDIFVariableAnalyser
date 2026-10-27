@@ -1,5 +1,6 @@
 """CDIF output: the DDI-CDI document through the vendored, extended CDIF converter."""
 
+import hashlib
 import json
 from datetime import date
 
@@ -9,6 +10,7 @@ from ddicdi.cdi.jsonld import GenerateOptions, build_document
 from ddicdi.cdif import convert_document
 from ddicdi.importers import import_file
 from ddicdi.roles import parse_roles
+from tests.conftest import ESS11_SAV
 from tests.test_api import _upload, client  # noqa: F401  (fixture)
 
 
@@ -169,3 +171,39 @@ def test_csv_null_sequence(qsv, tmp_path):
     csv.write_text("id,score\n1,2.5\n2,\n")
     doc = convert_document(build_document(import_file(csv, tmp_path / "work", qsv), options=GenerateOptions(max_rows=0)), "small")
     assert all(m["cdi:nullSequence"] == "" for m in doc["schema:distribution"][0]["cdif:hasPhysicalMapping"])
+
+
+
+def test_statistics(ess11):
+    doc = convert_document(
+        build_document(ess11, options=GenerateOptions(max_rows=0, include_statistics=True, statistics_weight="dweight")),
+        "ESS11-subset",
+    )
+    ppltrst = _var(doc, "ppltrst")
+    coll = ppltrst["cdif:isDescribedBy_StatisticsCollection"]
+    assert coll["@type"] == ["cdi:StatisticsCollection"] and coll["cdi:hasWeight"] == {"@id": "#instanceVariable-dweight"}
+    kinds = {b["cdif:typeOfStatistic"]: b for b in coll["cdif:has_Statistics"]}
+    assert {"mean", "minimum", "maximum", "frequency", "percentage"} <= set(kinds)
+    assert kinds["mean"]["cdi:statistic"][0]["cdi:isWeighted"] is True
+    assert ppltrst["schema:minValue"] == 0 and ppltrst["schema:maxValue"] == 10
+    freq = kinds["frequency"]
+    cats = freq["cdif:has_CategoryStatistics"]
+    assert cats[0]["@type"] == ["cdi:CategoryStatistics"] and cats[0]["cdi:for"]["@type"] == ["cdi:Category"]
+    assert freq["cdi:statistic"][0]["cdi:content"] == pytest.approx(sum(c["cdi:statistic"][0]["cdi:content"] for c in cats))
+    # Without statistics nothing is attached.
+    assert "cdif:isDescribedBy_StatisticsCollection" not in _var(
+        convert_document(build_document(ess11, options=GenerateOptions(max_rows=0)), "ESS11-subset"), "ppltrst")
+
+
+def test_file_facts_and_download_url(client):  # noqa: F811
+    fid = _upload(client).json()["file_id"]
+    info = client.get(f"/api/files/{fid}").json()
+    assert info["file_size"] == ESS11_SAV.stat().st_size
+    assert info["file_md5"] == hashlib.md5(ESS11_SAV.read_bytes()).hexdigest()
+    client.put(f"/api/files/{fid}/info", json={**info["info"], "content_url": "https://example.org/ess11.sav"})
+    doc = client.post(f"/api/files/{fid}/output", params={"format": "cdif"}, json={"include_statistics": True}).json()
+    dist = doc["schema:distribution"][0]
+    assert dist["schema:contentUrl"] == "https://example.org/ess11.sav"
+    assert dist["schema:contentSize"] == str(info["file_size"])
+    assert dist["spdx:checksum"]["spdx:checksumValue"] == info["file_md5"]
+    assert "cdif:isDescribedBy_StatisticsCollection" in _var(doc, "ppltrst")
