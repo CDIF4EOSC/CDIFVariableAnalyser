@@ -128,6 +128,53 @@ class Roles:
 
 
 @dataclass
+class Agent:
+    """A person or organisation credited for the dataset (creator or publisher)."""
+
+    name: str
+    kind: str = "person"  # person | organization
+    identifier: str = ""  # ORCID for a person, ROR for an organisation
+    affiliation: str = ""
+    affiliation_id: str = ""  # ROR of the affiliation
+    email: str = ""
+
+
+@dataclass
+class DatasetInfo:
+    """Dataset-level description entered in the editor: title, people, dates and the like.
+
+    None of it is in the data file. The CDIF output needs it for its discovery profile;
+    the DDI-CDI output does not carry it.
+    """
+
+    title: str = ""
+    description: str = ""
+    identifier: str = ""  # DOI, handle or URL of the dataset
+    url: str = ""  # landing page
+    record_id: str = ""  # IRI of the metadata record (the CDIF document's @id)
+    version: str = ""
+    license: str = ""  # licence URI
+    language: str = ""
+    keywords: list[str] = field(default_factory=list)
+    date_published: str = ""  # ISO 8601
+    date_modified: str = ""
+    creators: list[Agent] = field(default_factory=list)
+    publisher: Agent | None = None
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "DatasetInfo":
+        publisher = d.get("publisher")
+        return cls(
+            **{
+                **d,
+                "keywords": list(d.get("keywords", [])),
+                "creators": [Agent(**a) for a in d.get("creators", [])],
+                "publisher": Agent(**publisher) if publisher else None,
+            }
+        )
+
+
+@dataclass
 class DatasetMeta:
     variables: list[Variable]
     number_rows: int
@@ -140,6 +187,7 @@ class DatasetMeta:
     # The declared missing codes are in data.csv (always for a CSV upload; for a readstat
     # import only when qsv kept them), rather than written as empty cells.
     sentinels_in_data: bool = False
+    info: DatasetInfo = field(default_factory=DatasetInfo)
 
     # -- convenience ------------------------------------------------------------
 
@@ -198,6 +246,7 @@ class DatasetMeta:
             file_label=d.get("file_label"),
             sentinels_in_data=d.get("sentinels_in_data", d["file_format"] in ("csv", "parquet")),
             roles=roles,
+            info=DatasetInfo.from_dict(d.get("info", {})),
         )
 
 

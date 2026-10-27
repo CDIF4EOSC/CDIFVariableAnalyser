@@ -44,6 +44,33 @@ export interface EnrichResponse {
   errors: { name: string | null; kind: string; message: string }[];
 }
 
+/** A creator or the publisher, as the CDIF output credits them. */
+export interface Agent {
+  name: string;
+  kind: "person" | "organization";
+  identifier: string; // ORCID (person) or ROR (organisation)
+  affiliation: string;
+  affiliation_id: string; // ROR
+  email: string;
+}
+
+/** Dataset-level description for the CDIF discovery profile; not in the data file. */
+export interface DatasetInfo {
+  title: string;
+  description: string;
+  identifier: string;
+  url: string;
+  record_id: string;
+  version: string;
+  license: string;
+  language: string;
+  keywords: string[];
+  date_published: string;
+  date_modified: string;
+  creators: Agent[];
+  publisher: Agent | null;
+}
+
 export interface FileInfo {
   file_id: string;
   filename: string;
@@ -56,6 +83,7 @@ export interface FileInfo {
   sentinels_in_data: boolean;
   variables: Variable[];
   preview: Record<string, string>[];
+  info: DatasetInfo;
 }
 
 export interface PreviewPage {

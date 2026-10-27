@@ -1,4 +1,4 @@
-import type { CategoryStats, EnrichKind, EnrichResponse, FileInfo, JsonLdDoc, OutputBody, OutputFormat, PreviewPage, Statistics, Variable } from "./types";
+import type { CategoryStats, DatasetInfo, EnrichKind, EnrichResponse, FileInfo, JsonLdDoc, OutputBody, OutputFormat, PreviewPage, Statistics, Variable } from "./types";
 
 let apiKey = "";
 export function setApiKey(key: string) {
@@ -72,6 +72,8 @@ export const api = {
     return { blob: await res.blob(), filename: m ? m[1] : "output" };
   },
 
+  putInfo: (id: string, info: DatasetInfo) =>
+    request<DatasetInfo>(`/api/files/${id}/info`, { method: "PUT", body: JSON.stringify(info) }),
   putRoles: (id: string, roles: Record<string, string>) =>
     request<FileInfo>(`/api/files/${id}/roles`, { method: "PUT", body: JSON.stringify({ roles }) }),
   patchVariable: (id: string, name: string, patch: Record<string, unknown>) =>

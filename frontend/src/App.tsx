@@ -5,6 +5,7 @@ import { AddVariableDrawer } from "./components/AddVariableDrawer";
 import { ApiDocsModal } from "./components/ApiDocsModal";
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import { DataTable } from "./components/DataTable";
+import { DatasetPanel, checklist } from "./components/DatasetPanel";
 import { IconCode, IconDownload, IconFile, IconLogo, IconRedo, IconSettings, IconUndo } from "./components/Icons";
 import { JsonPreview } from "./components/JsonPreview";
 import { MetadataTable } from "./components/MetadataTable";
@@ -12,7 +13,7 @@ import { OptionsPopover } from "./components/OptionsPopover";
 import { StatisticsPanel } from "./components/StatisticsPanel";
 import { Toasts, type Toast } from "./components/Toasts";
 import { UploadScreen } from "./components/UploadScreen";
-import type { Concept, EnrichKind, FileInfo, JsonLdDoc, Options, OutputFormat, PreviewPage, Statistics, Suggestion } from "./types";
+import type { Concept, DatasetInfo, EnrichKind, FileInfo, JsonLdDoc, Options, OutputFormat, PreviewPage, Statistics, Suggestion } from "./types";
 import { ALL_STAT_NAMES, ENRICH_KINDS, sameFunctions } from "./types";
 
 interface Edit {
@@ -35,7 +36,7 @@ const FORMAT_LABEL: Record<OutputFormat, string> = { ddicdi: "DDI-CDI", cdif: "C
 // The live preview never streams the whole file; the download does.
 const PREVIEW_MAX_ROWS = 50;
 
-type View = "meta" | "data" | "stats";
+type View = "meta" | "data" | "stats" | "dataset";
 
 export default function App() {
   const [info, setInfo] = useState<FileInfo | null>(null);
@@ -360,6 +361,7 @@ export default function App() {
         if (e.key === "1") setView("meta");
         else if (e.key === "2") setView("data");
         else if (e.key === "3") setView("stats");
+        else if (e.key === "4") setView("dataset");
       }
     };
     window.addEventListener("keydown", onKey);
@@ -386,6 +388,18 @@ export default function App() {
         if (newName) setNewVars((s) => (s.has(newName) ? new Set([...s].map((x) => (x === newName ? name : x))) : s));
       },
     });
+  };
+
+  const saveDatasetInfo = async (next: DatasetInfo) => {
+    if (!info) return;
+    const fid = info.file_id;
+    const before = info.info;
+    await perform({
+      description: "dataset description",
+      redo: async () => { await api.putInfo(fid, next); },
+      undo: async () => { await api.putInfo(fid, before); },
+    });
+    toast("Dataset description saved");
   };
 
   const deleteVariable = async (name: string) => {
@@ -675,6 +689,8 @@ export default function App() {
    *  panel open: it only filters the preview when the user already has it open. */
   const highlightVariable = (name: string | null) => setFocusVar(name);
 
+  const datasetChecks = useMemo(() => (info ? checklist(info.info) : []), [info]);
+
   const baseName = useMemo(() => (info ? info.filename.replace(/\.[^.]+$/, "") : ""), [info]);
   const editCount = undoStack.length;
 
@@ -768,8 +784,12 @@ export default function App() {
               {stats && <span className="count">{stats.variables.length}</span>}
               {statsStatus !== "idle" && <span className={`out-dot ${statsStatus}`} title={statsStatus === "busy" ? "Computing…" : "Computation failed"} />}
             </button>
+            <button type="button" role="tab" aria-selected={view === "dataset"} className={view === "dataset" ? "on" : ""} onClick={() => setView("dataset")} title="Title, creators, publisher, dates and licence for the CDIF output (4)">
+              Dataset
+              <span className="count">{datasetChecks.filter((c) => c.ok).length}/{datasetChecks.length}</span>
+            </button>
             <span className="grow" />
-            <span className="hint">Press 1 / 2 / 3 to switch</span>
+            <span className="hint">Press 1 – 4 to switch</span>
           </nav>
           {view === "meta" ? (
             <MetadataTable
@@ -808,6 +828,8 @@ export default function App() {
               onDeleteRow={deleteRow}
               loading={pageLoading}
             />
+          ) : view === "dataset" ? (
+            <DatasetPanel info={info.info} filename={info.filename} onSave={saveDatasetInfo} />
           ) : (
             <StatisticsPanel
               stats={stats}

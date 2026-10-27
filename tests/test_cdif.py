@@ -66,3 +66,58 @@ def test_output_preview_in_cdif(client):  # noqa: F811
     assert r.status_code == 200, r.text
     doc = r.json()
     assert "DDICDIModels" not in doc and len(doc["schema:variableMeasured"]) == 13
+
+
+INFO = {
+    "title": "ESS Round 11 (subset)",
+    "description": "A subset of ESS11 used to test the converter.",
+    "identifier": "https://doi.org/10.21338/ess11e04_2",
+    "license": "https://creativecommons.org/licenses/by/4.0/",
+    "keywords": ["social trust", " ", "politics"],
+    "date_published": "2024-06",
+    "date_modified": "2025-11-03",
+    "creators": [
+        {"name": "ESS ERIC", "kind": "organization", "identifier": "05k4v5r53"},
+        {"name": "Doe, Jane", "identifier": "0000-0002-1825-0097", "affiliation": "Sikt",
+         "affiliation_id": "https://ror.org/04qtnsw81", "email": "jane@example.org"},
+    ],
+    "publisher": {"name": "Sikt", "kind": "organization", "identifier": "https://ror.org/04qtnsw81"},
+    "record_id": "https://example.org/records/ess11-subset",
+}
+
+
+def test_dataset_info_round_trip_and_cdif(client):  # noqa: F811
+    fid = _upload(client).json()["file_id"]
+    assert client.get(f"/api/files/{fid}").json()["info"]["creators"] == []
+    r = client.put(f"/api/files/{fid}/info", json=INFO)
+    assert r.status_code == 200, r.text
+    assert client.get(f"/api/files/{fid}/info").json()["creators"][1]["affiliation"] == "Sikt"
+    assert client.put(f"/api/files/{fid}/info", json={"date_published": "June 2024"}).status_code == 422
+
+    doc = client.post(f"/api/files/{fid}/output", params={"format": "cdif"}, json={}).json()
+    assert doc["@id"] == INFO["record_id"] and doc["schema:name"] == INFO["title"]
+    assert doc["schema:subjectOf"]["schema:about"] == {"@id": INFO["record_id"]}
+    assert doc["schema:identifier"]["schema:value"] == "10.21338/ess11e04_2"
+    assert doc["schema:identifier"]["schema:propertyID"] == {"@id": "https://registry.identifiers.org/registry/doi"}
+    assert doc["schema:keywords"] == ["social trust", "politics"]
+    assert doc["schema:datePublished"] == "2024-06" and doc["schema:dateModified"] == "2025-11-03"
+    org, person = doc["schema:creator"]["@list"]
+    assert org["@type"] == ["schema:Organization"] and org["schema:identifier"] == "https://ror.org/05k4v5r53"
+    assert person["schema:identifier"] == "https://orcid.org/0000-0002-1825-0097"
+    assert person["schema:affiliation"]["schema:name"] == "Sikt"
+    assert person["schema:contactPoint"]["schema:email"] == "jane@example.org"
+    assert doc["schema:publisher"]["schema:name"] == "Sikt"
+
+    # The DDI-CDI output does not carry the description.
+    ddicdi = client.post(f"/api/files/{fid}/output", json={"max_rows": 0}).json()
+    assert "schema:creator" not in ddicdi and "dct:title" not in ddicdi
+
+
+def test_empty_info_keeps_defaults(cdif):
+    assert cdif["@id"] == "urn:ddi-cdi:ESS11-subset" and "schema:creator" not in cdif
+    assert cdif["schema:identifier"]["schema:propertyID"] == "Uniform Resource Name"
+    assert cdif["schema:dateModified"] == "1900-01-01"
+    rows = next(p for p in cdif["schema:distribution"][0]["schema:additionalProperty"] if p["schema:name"] == "countRows")
+    assert rows["schema:propertyID"] == [{"@id": "http://rdf-vocabulary.ddialliance.org/discovery#caseQuantity"}]
+    domain = _var(cdif, "ppltrst")["cdi:takesSubstantiveValuesFrom"]
+    assert domain["cdif:displayLabel"] == "ppltrst: substantive values" and domain["cdif:takesValuesFrom"]["schema:name"]

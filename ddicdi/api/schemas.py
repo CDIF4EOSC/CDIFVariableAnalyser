@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
@@ -9,7 +10,7 @@ from pydantic import BaseModel, Field, field_validator
 from typing import Any
 
 from ..cdi.statistics import STATISTIC_NAMES
-from ..models import DatasetMeta, Variable
+from ..models import DatasetInfo, DatasetMeta, Variable
 from ..stats import CategoryStats, DatasetStats, VariableStats
 from ..roles import default_roles, roles_to_assignments
 
@@ -55,6 +56,44 @@ class VariableOut(BaseModel):
         )
 
 
+# A date as ISO 8601 allows it in a citation: a year, a month or a day.
+_ISO_DATE = r"^(\d{4}(-\d{2}(-\d{2})?)?)?$"
+
+
+class AgentIO(BaseModel):
+    name: str
+    kind: Literal["person", "organization"] = "person"
+    identifier: str = Field("", description="ORCID for a person, ROR for an organisation (bare or as a URL)")
+    affiliation: str = ""
+    affiliation_id: str = Field("", description="ROR of the affiliation")
+    email: str = ""
+
+
+class DatasetInfoIO(BaseModel):
+    """Dataset-level description: what the CDIF discovery profile asks for beyond the variables."""
+
+    title: str = ""
+    description: str = ""
+    identifier: str = Field("", description="DOI, handle or URL of the dataset")
+    url: str = Field("", description="landing page")
+    record_id: str = Field("", description="IRI of the metadata record, the CDIF document's @id")
+    version: str = ""
+    license: str = Field("", description="licence URI, e.g. https://creativecommons.org/licenses/by/4.0/")
+    language: str = ""
+    keywords: list[str] = Field(default_factory=list)
+    date_published: str = Field("", pattern=_ISO_DATE)
+    date_modified: str = Field("", pattern=_ISO_DATE)
+    creators: list[AgentIO] = Field(default_factory=list)
+    publisher: AgentIO | None = None
+
+    @classmethod
+    def from_info(cls, info: DatasetInfo) -> "DatasetInfoIO":
+        return cls.model_validate(asdict(info))
+
+    def to_info(self) -> DatasetInfo:
+        return DatasetInfo.from_dict(self.model_dump())
+
+
 class FileInfo(BaseModel):
     file_id: str
     filename: str
@@ -69,6 +108,7 @@ class FileInfo(BaseModel):
     )
     variables: list[VariableOut]
     preview: list[dict[str, str]] = Field(default_factory=list)
+    info: DatasetInfoIO = Field(default_factory=DatasetInfoIO)
 
     @classmethod
     def from_meta(cls, file_id: str, meta: DatasetMeta, preview: list[dict[str, str]]) -> "FileInfo":
@@ -85,6 +125,7 @@ class FileInfo(BaseModel):
             sentinels_in_data=meta.sentinels_in_data,
             variables=[VariableOut.from_variable(v, roles[v.name]) for v in meta.variables],
             preview=preview,
+            info=DatasetInfoIO.from_info(meta.info),
         )
 
 

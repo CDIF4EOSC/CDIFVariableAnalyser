@@ -24,6 +24,18 @@ DDI-CDI 1.1beta JSON-LD that DDI-CDI Studio writes. Changes against upstream
     submodule) is left out; the built-in conformsTo gains data_structure when
     the distribution has a structure.
   - ``convert_document()`` takes the parsed document instead of a path.
+  - Discovery fields in the header in schema.org terms (creator, publisher,
+    keywords, datePublished, dateModified, version, url, ...) are copied
+    through; a header dateModified replaces the unknown-date placeholder.
+  - schema:identifier gets a schema:propertyID: the identifiers.org DOI or ARK
+    scheme as an IRI, otherwise a name for the kind of identifier; a DOI also
+    gets its bare value and a doi.org schema:url.
+  - The countRows / countColumns propertyID is an IRI reference, not a string
+    (the CDIF shapes reject a URI-shaped string literal).
+  - A variable's concepts are also its schema:propertyID.
+  - Value domains are labelled: cdif:displayLabel on the Substantive /
+    SentinelValueDomain, schema:name on the EnumerationDomain.
+  - The catalog record carries schema:sdDatePublished (the conversion date).
 
 Reads the compact JSON-LD serialisation of DDI-CDI (1.1beta context,
 ``https://ddi-cdi.github.io/m2t-ng/DDI-CDI_1-1beta/encoding/json-ld/ddi-cdi.jsonld``)
@@ -68,6 +80,8 @@ Usage:
 """
 import argparse
 import json
+import re
+from datetime import date
 from pathlib import Path
 
 # From ddicdi_to_cdif.py.
@@ -103,6 +117,17 @@ XSD = "http://www.w3.org/2001/XMLSchema#"
 # (https://www.w3.org/TR/xmlschema-2/#decimal); CDIF wants the datatype IRI.
 XSD_DOC = "https://www.w3.org/TR/xmlschema-2/#"
 DDI_DISCOVERY = "http://rdf-vocabulary.ddialliance.org/discovery#"
+
+# Header properties in schema.org terms that go into the CDIF record as they are.
+HEADER_PASSTHROUGH = ("schema:url", "schema:version", "schema:creator",
+                      "schema:contributor", "schema:publisher",
+                      "schema:keywords", "schema:datePublished",
+                      "schema:dateModified", "schema:temporalCoverage",
+                      "schema:spatialCoverage", "schema:citation")
+
+IDENTIFIERS_ORG = "https://registry.identifiers.org/registry/"
+DOI_RE = re.compile(r"^(?:https?://(?:dx\.)?doi\.org/|doi:)?(10\.\d{4,9}/\S+)$", re.I)
+ARK_RE = re.compile(r"(?:^|/)(ark:/?\d{5,}/\S+)$")
 
 # Media types for the binary files a StructuredDataSet describes, by extension.
 ENCODING_FORMATS = {
@@ -141,6 +166,29 @@ def xsd_iri(dt):
     if dt and dt.startswith(XSD_DOC):
         return XSD + dt[len(XSD_DOC):]
     return dt
+
+
+def identifier_node(ident):
+    """An identifier string -> schema:PropertyValue with a schema:propertyID."""
+    node = {"@type": ["schema:PropertyValue"], "schema:value": ident}
+    doi = DOI_RE.match(ident)
+    ark = ARK_RE.search(ident)
+    if doi:
+        node["schema:propertyID"] = {"@id": IDENTIFIERS_ORG + "doi"}
+        node["schema:value"] = doi.group(1)
+        node["schema:url"] = "https://doi.org/" + doi.group(1)
+    elif ark:
+        node["schema:propertyID"] = {"@id": IDENTIFIERS_ORG + "ark"}
+        if ident.startswith(("http://", "https://")):
+            node["schema:url"] = ident
+    elif ident.startswith(("http://", "https://")):
+        node["schema:propertyID"] = "Web address"
+        node["schema:url"] = ident
+    elif ident.startswith("urn:"):
+        node["schema:propertyID"] = "Uniform Resource Name"
+    else:
+        node["schema:propertyID"] = "Local identifier"
+    return node
 
 
 def label_of(node):
@@ -187,7 +235,7 @@ def build_concept_scheme(codelist, index, code_order):
     return scheme
 
 
-def value_domain(domain, index, code_order, substantive):
+def value_domain(domain, index, code_order, substantive, variable):
     """A value domain with a code list -> a cdif Substantive/SentinelValueDomain."""
     codelist = index.get(value(domain, "takesValuesFrom"))
     if codelist is None or codelist.get("@type") != "CodeList":
@@ -195,9 +243,12 @@ def value_domain(domain, index, code_order, substantive):
     scheme = build_concept_scheme(codelist, index, code_order)
     if scheme is None:
         return None
+    kind = "substantive" if substantive else "sentinel"
     return {"@type": ["cdif:SubstantiveValueDomain" if substantive
                       else "cdif:SentinelValueDomain"],
+            "cdif:displayLabel": f"{variable}: {kind} values",
             "cdif:takesValuesFrom": {"@type": ["cdif:EnumerationDomain"],
+                                     "schema:name": scheme["skos:prefLabel"],
                                      "cdif:references": scheme}}
 
 
@@ -216,6 +267,7 @@ def build_variable(iv, roles, index, code_order):
     concepts = [value(index.get(c), "owl:sameAs", "@id") for c in as_list(iv.get("uses_Concept"))]
     if any(concepts):
         vm["cdif:uses"] = [{"@id": c} for c in concepts if c]
+        vm["schema:propertyID"] = [{"@id": c} for c in concepts if c]
     svd = index.get(iv.get("takesSubstantiveValuesFrom_SubstantiveValueDomain"))
     if svd:
         dt = xsd_iri(value(svd, "recommendedDataType", "entryValue"))
@@ -224,13 +276,14 @@ def build_variable(iv, roles, index, code_order):
         level = value(index.get(svd.get("isDescribedBy")), "classificationLevel")
         if level:
             vm["cdi:classificationLevel"] = level
-        domain = value_domain(svd, index, code_order, substantive=True)
+        domain = value_domain(svd, index, code_order, substantive=True, variable=name)
         if domain:
             vm["cdi:takesSubstantiveValuesFrom"] = domain
     sentinels = []
     for ref in as_list(iv.get("takesSentinelValuesFrom")
                        or iv.get("takesSentinelValuesFrom_SentinelValueDomain")):
-        domain = value_domain(index.get(ref), index, code_order, substantive=False)
+        domain = value_domain(index.get(ref), index, code_order, substantive=False,
+                              variable=name)
         if domain:
             sentinels.append(domain)
     if sentinels:
@@ -332,7 +385,7 @@ def build_physical_mappings(objects, index):
 
 def count_property(name, concept, n):
     return {"@type": ["schema:PropertyValue"],
-            "schema:propertyID": [DDI_DISCOVERY + concept],
+            "schema:propertyID": [{"@id": DDI_DISCOVERY + concept}],
             "schema:name": name, "schema:value": n}
 
 
@@ -410,6 +463,7 @@ def build_catalog_record(dataset_iri, name, source_conforms):
         "schema:name": f"Metadata record for: {name[:120]}",
         "schema:about": {"@id": dataset_iri},
         "schema:description": note,
+        "schema:sdDatePublished": date.today().isoformat(),
         "dcterms:conformsTo": [
             {"@id": "https://w3id.org/cdif/core/1.1"},
             {"@id": "https://w3id.org/cdif/discovery/1.1"},
@@ -437,10 +491,12 @@ def convert_document(header, stem, explicit_id=None):
            "@id": iri, "@type": ["schema:Dataset"], "schema:name": name}
     if header.get("dct:description"):
         doc["schema:description"] = header["dct:description"]
-    doc["schema:identifier"] = {"@type": ["schema:PropertyValue"],
-                                "schema:value": header.get("dct:identifier") or iri}
-    # No modification date in the source; the converters' placeholder.
-    doc["schema:dateModified"] = UNKNOWN_DATE
+    doc["schema:identifier"] = identifier_node(header.get("dct:identifier") or iri)
+    for key in HEADER_PASSTHROUGH:
+        if header.get(key):
+            doc[key] = header[key]
+    # Without a modification date in the source, the converters' placeholder.
+    doc.setdefault("schema:dateModified", UNKNOWN_DATE)
     doc["schema:license"] = [header.get("dct:license") or NIL_MISSING]
     if header.get("dct:language"):
         doc["schema:inLanguage"] = header["dct:language"]

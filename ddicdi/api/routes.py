@@ -11,7 +11,7 @@ from pydantic import ValidationError
 
 from .. import __version__, editing, enrich, stats
 from ..cdi.jsonld import GenerateOptions, build_document, generate_complete_json_ld
-from ..cdif import convert_document
+from ..cdif import convert_document, dataset_header
 from ..cdi.statistics import STATISTIC_NAMES
 from ..config import settings
 from ..data import Dataset
@@ -21,6 +21,7 @@ from ..roles import ROLE_NAMES, parse_roles
 from .schemas import (
     CategoryStatsOut,
     CellsIn,
+    DatasetInfoIO,
     EnrichErrorOut,
     EnrichIn,
     EnrichOut,
@@ -106,6 +107,8 @@ def _jsonld(dataset: Dataset, req: GenerateRequest | OutputRequest) -> str:
 def _cdif(dataset: Dataset) -> str:
     """The document converted to CDIF. CDIF is metadata only, so no rows or statistics go in."""
     doc = build_document(dataset, options=GenerateOptions(max_rows=0))
+    # The dataset description from the editor goes in as the header the converter reads.
+    doc.update(dataset_header(dataset.meta.info))
     cdif = convert_document(doc, Path(dataset.meta.datafile).stem)
     return json.dumps(cdif, indent=2, ensure_ascii=False)
 
@@ -139,6 +142,7 @@ def info() -> dict:
             "POST /api/files/{id}/generate?format=ddicdi|cdif": "generate DDI-CDI (or CDIF) JSON-LD as a download",
             "POST /api/files/{id}/output?format=ddicdi|cdif": "regenerate for the editor preview (JSON-LD as JSON)",
             "PUT /api/files/{id}/roles": "replace all variable roles",
+            "GET|PUT /api/files/{id}/info": "dataset description (title, creators, publisher, dates, keywords, licence, identifier) for the CDIF output",
             "POST /api/files/{id}/variables": "add a variable (new column)",
             "PATCH /api/files/{id}/variables/{name}": "edit label, format, type, measure, value labels, missing, role, functions, name, unit of measure, concepts",
             "GET /api/files/{id}/statistics": "summary statistics per variable (qsv stats); also emitted into the output with include_statistics",
@@ -250,6 +254,19 @@ def put_roles(file_id: str, body: RolesIn, store: UploadStore = Depends(get_stor
     _edit(editing.set_roles, dataset.meta, body.roles)
     _save(store, file_id, dataset)
     return FileInfo.from_meta(file_id, dataset.meta, [])
+
+
+@router.get("/files/{file_id}/info", response_model=DatasetInfoIO, dependencies=[Depends(require_api_key)])
+def get_dataset_info(file_id: str, store: UploadStore = Depends(get_store)) -> DatasetInfoIO:
+    return DatasetInfoIO.from_info(_load(store, file_id).meta.info)
+
+
+@router.put("/files/{file_id}/info", response_model=DatasetInfoIO, dependencies=[Depends(require_api_key)])
+def put_dataset_info(file_id: str, body: DatasetInfoIO, store: UploadStore = Depends(get_store)) -> DatasetInfoIO:
+    dataset = _load(store, file_id)
+    dataset.meta.info = body.to_info()
+    _save(store, file_id, dataset)
+    return DatasetInfoIO.from_info(dataset.meta.info)
 
 
 @router.post(
