@@ -46,6 +46,35 @@ function highlight(line: string): React.ReactNode[] {
   return out;
 }
 
+/**
+ * A CDIF document nests most of its classes (distribution, data structure,
+ * components, value domains, statistics) inside other objects. Find where each
+ * typed object starts in the rendered lines so the toolbar can jump to it.
+ */
+function nestedTargets(lines: Line[]): Map<string, number[]> {
+  const out = new Map<string, number[]>();
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i].text;
+    const trimmed = t.trimStart();
+    if (!trimmed.startsWith('"@type":')) continue;
+    let type: string | undefined;
+    const single = /^"@type":\s*"([^"]+)"/.exec(trimmed);
+    if (single) type = single[1];
+    else for (let j = i + 1; j < lines.length && !lines[j].text.trimStart().startsWith("]"); j++) {
+      type = JSON.parse(lines[j].text.trim().replace(/,$/, "")) as string; // the most specific type is last
+    }
+    if (!type || !(type.startsWith("cdi:") || type.startsWith("cdif:") || type === "skos:ConceptScheme")) continue;
+    // the object's opening brace: the nearest line above, one level out, ending in "{"
+    const indent = t.length - trimmed.length - 4;
+    let start = i - 1;
+    while (start > 0 && !(lines[start].text.endsWith("{") && lines[start].text.length - lines[start].text.trimStart().length === indent)) start--;
+    const rows = out.get(type);
+    if (rows) rows.push(start);
+    else out.set(type, [start]);
+  }
+  return out;
+}
+
 const INDENT = "        ";
 const ROW = 20; // px, must match pre.code line-height
 const PAD = 12; // px, pre.code vertical padding
@@ -77,7 +106,7 @@ function VirtualCode({ count, scroller, renderRow, footer, scrollToRow }: {
   scroller: React.RefObject<HTMLDivElement>;
   renderRow: (i: number) => React.ReactNode;
   footer?: React.ReactNode;
-  scrollToRow: number | null;
+  scrollToRow: { row: number } | null; // a fresh object scrolls again, even to the same row
 }) {
   const [range, setRange] = useState({ start: 0, end: 80 });
   const raf = useRef(0);
@@ -111,7 +140,7 @@ function VirtualCode({ count, scroller, renderRow, footer, scrollToRow }: {
   useEffect(() => {
     const el = scroller.current;
     if (!el || scrollToRow === null) return;
-    el.scrollTop = Math.max(0, PAD + scrollToRow * ROW - el.clientHeight / 2);
+    el.scrollTop = Math.max(0, PAD + scrollToRow.row * ROW - el.clientHeight / 2);
     measure();
   }, [scroller, scrollToRow, measure]);
 
@@ -215,10 +244,22 @@ export function JsonPreview(p: Props) {
   }, [p.doc, p.views, query, typeFilter, varIds, cap]);
 
   // Scroll to the first highlighted / focused line after a regeneration or focus change (not on search/cap changes).
-  const [scrollTarget, setScrollTarget] = useState<number | null>(null);
+  const [scrollTarget, setScrollTarget] = useState<{ row: number } | null>(null);
   useEffect(() => {
-    setScrollTarget(firstHighlight);
+    setScrollTarget(firstHighlight === null ? null : { row: firstHighlight });
   }, [p.doc, varIds]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // CDIF only: the nested classes, in document order, each click moving to the next occurrence.
+  const targets = useMemo(() => (p.format === "cdif" ? nestedTargets(lines) : new Map<string, number[]>()), [p.format, lines]);
+  const [jump, setJump] = useState<{ type: string; i: number } | null>(null);
+  useEffect(() => setJump(null), [lines]);
+  const jumpTo = (type: string) => {
+    const rows = targets.get(type)!;
+    const i = jump?.type === type ? (jump.i + 1) % rows.length : 0;
+    setJump({ type, i });
+    setScrollTarget({ row: rows[i] });
+  };
+  const jumpRow = jump ? targets.get(jump.type)?.[jump.i] ?? null : null;
 
   const copy = async () => {
     await navigator.clipboard.writeText(p.doc ? JSON.stringify(p.doc, null, 4) : "");
@@ -257,6 +298,17 @@ export function JsonPreview(p: Props) {
               {type}<span>{n}</span>
             </button>
           ))}
+          {[...targets.entries()].filter(([type]) => !counts.has(type)).map(([type, rows]) => (
+            <button
+              key={type}
+              type="button"
+              className={jump?.type === type ? "on" : ""}
+              title={`Jump to the next ${type}`}
+              onClick={() => jumpTo(type)}
+            >
+              {type}<span>{jump?.type === type ? `${jump.i + 1}/${rows.length}` : rows.length}</span>
+            </button>
+          ))}
         </div>
       </div>
 
@@ -274,7 +326,7 @@ export function JsonPreview(p: Props) {
                 return (
                   <span
                     key={i}
-                    className={`ln ${l.kind !== "same" ? l.kind : ""} ${q && l.text.toLowerCase().includes(q) ? "hit" : ""}`}
+                    className={`ln ${l.kind !== "same" ? l.kind : ""} ${q && l.text.toLowerCase().includes(q) ? "hit" : ""} ${i === jumpRow ? "focus" : ""}`}
                     data-focus={varIds && l.id && varIds.has(l.id) ? "1" : undefined}
                   >
                     <span className="n">{l.n ?? (l.kind === "removed" ? "−" : "")}</span>

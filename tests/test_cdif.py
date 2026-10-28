@@ -64,6 +64,24 @@ def test_generate_cdif_download(client):  # noqa: F811
     assert client.post(f"/api/files/{fid}/generate", params={"format": "xml"}, json={}).status_code == 422
 
 
+def test_convert_one_shot_cdif(client):  # noqa: F811
+    with ESS11_SAV.open("rb") as fh:
+        r = client.post(
+            "/api/convert",
+            files={"file": (ESS11_SAV.name, fh)},
+            data={"output_format": "cdif", "include_statistics": "true"},
+        )
+    assert r.status_code == 200, r.text
+    doc = json.loads(r.content)
+    assert doc["@id"] == "urn:ddi-cdi:ESS11-subset" and len(doc["schema:variableMeasured"]) == 13
+    assert len(doc["schema:distribution"][0]["cdif:hasPhysicalMapping"]) == 13
+    assert "cdif:isDescribedBy_StatisticsCollection" in _var(doc, "ppltrst")
+    assert list(client.app.state.store.root.iterdir()) == []
+    with ESS11_SAV.open("rb") as fh:
+        bad = client.post("/api/convert", files={"file": (ESS11_SAV.name, fh)}, data={"output_format": "xml"})
+    assert bad.status_code == 400
+
+
 def test_output_preview_in_cdif(client):  # noqa: F811
     fid = _upload(client).json()["file_id"]
     r = client.post(f"/api/files/{fid}/output", params={"format": "cdif"}, json={"max_rows": 5})

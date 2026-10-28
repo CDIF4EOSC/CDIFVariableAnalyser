@@ -55,9 +55,12 @@ export function checklist(d: DatasetInfo) {
     { label: "Persistent identifier", ok: Boolean(d.identifier.trim()), level: "recommended", note: "a DOI is best" },
     { label: "Download URL", ok: Boolean(d.content_url.trim()), level: "recommended", note: "the data file's own link" },
     { label: "Date published", ok: Boolean(d.date_published), level: "suggested" },
+    { label: "Contributor", ok: d.contributors.some((a) => a.name.trim()), level: "suggested" },
     { label: "Publisher", ok: Boolean(d.publisher?.name.trim()), level: "suggested" },
     { label: "Temporal coverage", ok: Boolean(d.temporal_start || d.temporal_end), level: "suggested" },
     { label: "Spatial coverage", ok: d.spatial.some((p) => p.trim()), level: "suggested" },
+    // a MonetaryGrant needs at least one of funder, identifier (award) or name (title)
+    { label: "Funding", ok: d.funding.some((g) => [g.funder, g.funder_id, g.award, g.title].some((v) => v.trim())), level: "suggested" },
   ] as const;
 }
 
@@ -67,7 +70,7 @@ function AgentRow({ agent, index, count, roles, onChange, onMove, onRemove }: {
   count: number;
   roles?: VocabularyTerm[]; // given for contributors: the role picker
   onChange: (a: Agent) => void;
-  onMove: (delta: number) => void;
+  onMove?: (delta: number) => void; // left out for the single publisher: no number, no reordering
   onRemove: () => void;
 }) {
   const person = agent.kind === "person";
@@ -76,7 +79,7 @@ function AgentRow({ agent, index, count, roles, onChange, onMove, onRemove }: {
   return (
     <div className="agent-row">
       <div className="agent-head">
-        <span className="agent-num">{index + 1}</span>
+        {onMove && <span className="agent-num">{index + 1}</span>}
         <div className="seg">
           <button type="button" className={person ? "on" : ""} onClick={() => set("kind", "person")}>Person</button>
           <button type="button" className={!person ? "on" : ""} onClick={() => set("kind", "organization")}>Organisation</button>
@@ -88,8 +91,12 @@ function AgentRow({ agent, index, count, roles, onChange, onMove, onRemove }: {
           </select>
         )}
         <span className="grow" />
-        <button type="button" className="iconbtn" title="Move up" disabled={index === 0} onClick={() => onMove(-1)}>↑</button>
-        <button type="button" className="iconbtn" title="Move down" disabled={index === count - 1} onClick={() => onMove(1)}>↓</button>
+        {onMove && (
+          <>
+            <button type="button" className="iconbtn" title="Move up" disabled={index === 0} onClick={() => onMove(-1)}>↑</button>
+            <button type="button" className="iconbtn" title="Move down" disabled={index === count - 1} onClick={() => onMove(1)}>↓</button>
+          </>
+        )}
         <button type="button" className="iconbtn" title="Remove" onClick={onRemove}><IconX /></button>
       </div>
       <div className="grid2">
@@ -269,25 +276,41 @@ export function DatasetPanel({ info, filename, fileSize, fileMd5, vocabularies, 
             </fieldset>
 
             <fieldset>
-              <legend>Publisher</legend>
-              <div className="grid2">
-                <label className="field">
-                  <span>Name</span>
-                  <input
-                    value={draft.publisher?.name ?? ""}
-                    placeholder="Archive or repository"
-                    onChange={(e) => set("publisher", { ...(draft.publisher ?? emptyAgent("organization")), name: e.target.value })}
-                  />
-                </label>
-                <label className="field">
-                  <span>ROR</span>
-                  <input
-                    value={draft.publisher?.identifier ?? ""}
-                    placeholder="https://ror.org/…"
-                    onChange={(e) => set("publisher", { ...(draft.publisher ?? emptyAgent("organization")), identifier: e.target.value })}
-                  />
-                </label>
+              <legend>Contributors <span className="hint-label">data collectors, curators, distributors…</span></legend>
+              {draft.contributors.map((a, i) => (
+                <AgentRow
+                  key={i}
+                  agent={a}
+                  index={i}
+                  count={draft.contributors.length}
+                  roles={vocabularies?.contributor_role ?? []}
+                  onChange={(next) => setContributor(i, next)}
+                  onMove={(delta) => moveIn("contributors", i, delta)}
+                  onRemove={() => set("contributors", draft.contributors.filter((_, j) => j !== i))}
+                />
+              ))}
+              <div className="row" style={{ gap: 8 }}>
+                <button type="button" className="btn add" onClick={() => set("contributors", [...draft.contributors, emptyAgent("person")])}><IconPlus /> Person</button>
+                <button type="button" className="btn add" onClick={() => set("contributors", [...draft.contributors, emptyAgent("organization")])}><IconPlus /> Organisation</button>
               </div>
+            </fieldset>
+
+            <fieldset>
+              <legend>Publisher <span className="hint-label">who made the dataset publicly available</span></legend>
+              {draft.publisher ? (
+                <AgentRow
+                  agent={draft.publisher}
+                  index={0}
+                  count={1}
+                  onChange={(next) => set("publisher", next)}
+                  onRemove={() => set("publisher", null)}
+                />
+              ) : (
+                <div className="row" style={{ gap: 8 }}>
+                  <button type="button" className="btn add" onClick={() => set("publisher", emptyAgent("person"))}><IconPlus /> Person</button>
+                  <button type="button" className="btn add" onClick={() => set("publisher", emptyAgent("organization"))}><IconPlus /> Organisation</button>
+                </div>
+              )}
             </fieldset>
 
             <fieldset>
@@ -357,26 +380,6 @@ export function DatasetPanel({ info, filename, fileSize, fileMd5, vocabularies, 
                   <input value={draft.license} placeholder="https://…" onChange={(e) => set("license", e.target.value)} />
                 </label>
               )}
-            </fieldset>
-
-            <fieldset>
-              <legend>Contributors <span className="hint-label">data collectors, curators, distributors…</span></legend>
-              {draft.contributors.map((a, i) => (
-                <AgentRow
-                  key={i}
-                  agent={a}
-                  index={i}
-                  count={draft.contributors.length}
-                  roles={vocabularies?.contributor_role ?? []}
-                  onChange={(next) => setContributor(i, next)}
-                  onMove={(delta) => moveIn("contributors", i, delta)}
-                  onRemove={() => set("contributors", draft.contributors.filter((_, j) => j !== i))}
-                />
-              ))}
-              <div className="row" style={{ gap: 8 }}>
-                <button type="button" className="btn add" onClick={() => set("contributors", [...draft.contributors, emptyAgent("person")])}><IconPlus /> Person</button>
-                <button type="button" className="btn add" onClick={() => set("contributors", [...draft.contributors, emptyAgent("organization")])}><IconPlus /> Organisation</button>
-              </div>
             </fieldset>
 
             <fieldset>
