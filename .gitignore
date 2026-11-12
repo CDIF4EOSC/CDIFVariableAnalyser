@@ -15,3 +15,5 @@ docstest-files/
 test-files/
 docs/drafts/
 feedback/
+# Claude Security scan exports
+security/

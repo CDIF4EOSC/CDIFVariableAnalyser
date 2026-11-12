@@ -46,6 +46,27 @@ docker stop ddicdi && docker rm ddicdi
 
 If `docker run` fails with `port is already allocated`, an earlier container is still running: `docker ps` shows it, `docker stop <name>` frees the port.
 
+### Secrets from 1Password
+
+Instead of typing the bearer token or API key on the command line, keep them in a [1Password Environment](https://www.1password.dev/environments/) and let the 1Password CLI hand them to Docker:
+
+```bash
+op run --environment=<environment-id> -- \
+  docker run --rm -p 8080:8000 -e DDI_N8N_BEARER_KEY -e DDI_API_KEY ddicdi-studio
+```
+
+How it works:
+
+- `op run` reads the Environment's secrets (approved with Touch ID or your 1Password password) and sets them as environment variables for the one command after `--`. They never appear in the command, your shell history or a file on disk.
+- `-e DDI_N8N_BEARER_KEY` without `=value` tells Docker to copy the variable of that name from the calling environment into the container. Leave out `-e DDI_API_KEY` to run without upload authentication.
+- The Environment holds `DDI_N8N_BEARER_KEY` (the full `Bearer …` header value) and optionally `DDI_API_KEY`. Its ID is shown in the 1Password app under Developer → Environments.
+
+One-time setup: `brew install 1password-cli` (a recent version; older ones lack `--environment`), then turn on **Settings → Developer → Integrate with 1Password CLI** in the 1Password app.
+
+Check that the secrets arrived: http://localhost:8080/api/info shows `"ai_enrichment": true` and `"authentication": "X-API-Key header"`.
+
+The same works when running from source: `op run --environment=<environment-id> -- uv run uvicorn ddicdi.api.main:app --port 8000`. Prefer this over a 1Password-mounted `.env` file; the backend reads that file once at startup, and the mount occasionally delivers it empty, which silently turns AI suggestions and authentication off.
+
 Uploads live inside the container and are deleted after six hours of inactivity (`DDI_UPLOAD_TTL_SECONDS`) or when the container restarts. An open editor tab then returns to the upload screen with a "session has expired" message.
 
 All settings are environment variables prefixed `DDI_`; the full list with defaults is in `ddicdi/config.py`. Deployment notes are kept internally at Sikt.

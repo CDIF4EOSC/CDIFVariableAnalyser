@@ -344,15 +344,14 @@
       ]
     }
   },
-  "pinData": {},
-  "active": false,
   "settings": {
     "executionOrder": "v1",
     "callerPolicy": "workflowsFromSameOwner",
     "availableInMCP": false,
     "binaryMode": "separate"
   },
-  "versionId": "51578547-499f-4bdb-9ebe-b8208b4c1e63",
+  "pinData": {},
+  "active": false,
   "meta": null,
   "id": "yliNxcIcjuqrxHiJ",
   "tags": []
