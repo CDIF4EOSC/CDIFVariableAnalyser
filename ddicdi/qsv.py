@@ -12,6 +12,7 @@ import csv
 import io
 import json
 import os
+import signal
 import subprocess
 from pathlib import Path
 
@@ -27,6 +28,27 @@ class QsvError(RuntimeError):
     """qsv exited with a non-zero status."""
 
 
+def _child_limits(max_file_bytes: int, max_memory_bytes: int):
+    """A ``preexec_fn`` that sets RLIMIT_FSIZE / RLIMIT_AS in the qsv child, or None.
+
+    POSIX only; a limit the platform refuses is skipped rather than failing the call.
+    The function only makes C-level ``setrlimit`` calls, which is safe after fork.
+    """
+    if os.name != "posix" or not (max_file_bytes or max_memory_bytes):
+        return None
+    import resource
+
+    def apply() -> None:
+        for limit, value in ((resource.RLIMIT_FSIZE, max_file_bytes), (resource.RLIMIT_AS, max_memory_bytes)):
+            if value:
+                try:
+                    resource.setrlimit(limit, (value, value))
+                except (ValueError, OSError):
+                    pass
+
+    return apply
+
+
 class Qsv:
     def __init__(self, binary: str | os.PathLike[str] | None = None) -> None:
         self.binary = str(binary or settings.qsv_bin)
@@ -39,7 +61,15 @@ class Qsv:
     # -- generic -----------------------------------------------------------------
 
     def run(self, *args: str, input_bytes: bytes | None = None, timeout: float | None = None) -> bytes:
+        """Run qsv; ``timeout`` defaults to ``settings.qsv_timeout`` (0 = none).
+
+        The child gets the file-size and memory limits from the settings, so no qsv call
+        reachable from an upload can run, write or allocate without bound.
+        """
         env = dict(os.environ, QSV_PROGRESSBAR="0", QSV_NO_UPDATE="1")
+        if timeout is None:
+            timeout = settings.qsv_timeout or None
+        max_bytes = settings.import_max_bytes
         try:
             proc = subprocess.run(
                 [self.binary, *args],
@@ -47,9 +77,13 @@ class Qsv:
                 capture_output=True,
                 env=env,
                 timeout=timeout,
+                preexec_fn=_child_limits(max_bytes, settings.qsv_max_memory_bytes),
             )
         except subprocess.TimeoutExpired:
             raise QsvError(f"qsv {' '.join(args)} timed out after {timeout}s")
+        too_large = proc.returncode == -getattr(signal, "SIGXFSZ", 0) or b"File too large" in proc.stderr
+        if max_bytes and proc.returncode != 0 and too_large:
+            raise QsvError(f"qsv {args[0] if args else ''} output larger than the limit of {max_bytes} bytes")
         if proc.returncode != 0:
             raise QsvError(
                 f"qsv {' '.join(args)} failed ({proc.returncode}): "

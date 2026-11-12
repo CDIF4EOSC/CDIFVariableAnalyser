@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
 from typing import Any
 
 from ..cdi.statistics import STATISTIC_NAMES
+from ..config import settings
 from ..models import DatasetInfo, DatasetMeta, Variable
 from ..stats import CategoryStats, DatasetStats, VariableStats
 from ..roles import default_roles, roles_to_assignments
@@ -60,45 +61,66 @@ class VariableOut(BaseModel):
 _ISO_DATE = r"^(\d{4}(-\d{2}(-\d{2})?)?)?$"
 
 
+# Upper bounds for the dataset description. Each value is stored with the upload and
+# re-processed on every CDIF output, so an oversized one is refused (422) here.
+_IRI_MAX = 2048  # identifiers, URLs, licence URIs, ORCID/ROR
+_SHORT_MAX = 500  # names, roles, award numbers, keywords, places
+_TITLE_MAX = 1000
+_TEXT_MAX = 20_000  # the free-text description
+_LIST_MAX = 200  # keywords, spatial coverage
+_AGENTS_MAX = 500  # creators, contributors
+_FUNDING_MAX = 100
+
+ShortStr = Annotated[str, Field(max_length=_SHORT_MAX)]
+
+
 class AgentIO(BaseModel):
-    name: str
+    name: str = Field(max_length=_SHORT_MAX)
     kind: Literal["person", "organization"] = "person"
-    identifier: str = Field("", description="ORCID for a person, ROR for an organisation (bare or as a URL)")
-    affiliation: str = ""
-    affiliation_id: str = Field("", description="ROR of the affiliation")
-    email: str = ""
-    role: str = Field("", description="contributors only: DataCite contributorType, e.g. DataCollector")
+    identifier: str = Field(
+        "", max_length=_IRI_MAX, description="ORCID for a person, ROR for an organisation (bare or as a URL)"
+    )
+    affiliation: str = Field("", max_length=_SHORT_MAX)
+    affiliation_id: str = Field("", max_length=_IRI_MAX, description="ROR of the affiliation")
+    email: str = Field("", max_length=_SHORT_MAX)
+    role: str = Field(
+        "", max_length=_SHORT_MAX, description="contributors only: DataCite contributorType, e.g. DataCollector"
+    )
 
 
 class GrantIO(BaseModel):
-    funder: str = ""
-    funder_id: str = Field("", description="ROR of the funder")
-    award: str = Field("", description="award number")
-    title: str = Field("", description="grant or project name")
+    funder: str = Field("", max_length=_SHORT_MAX)
+    funder_id: str = Field("", max_length=_IRI_MAX, description="ROR of the funder")
+    award: str = Field("", max_length=_SHORT_MAX, description="award number")
+    title: str = Field("", max_length=_TITLE_MAX, description="grant or project name")
 
 
 class DatasetInfoIO(BaseModel):
     """Dataset-level description: what the CDIF discovery profile asks for beyond the variables."""
 
-    title: str = ""
-    description: str = ""
-    identifier: str = Field("", description="DOI, handle or URL of the dataset")
-    url: str = Field("", description="landing page")
-    content_url: str = Field("", description="download URL of the data file")
-    record_id: str = Field("", description="IRI of the metadata record, the CDIF document's @id")
-    version: str = ""
-    license: str = Field("", description="licence URI, e.g. https://creativecommons.org/licenses/by/4.0/")
-    language: str = ""
-    keywords: list[str] = Field(default_factory=list)
+    title: str = Field("", max_length=_TITLE_MAX)
+    description: str = Field("", max_length=_TEXT_MAX)
+    identifier: str = Field("", max_length=_IRI_MAX, description="DOI, handle or URL of the dataset")
+    url: str = Field("", max_length=_IRI_MAX, description="landing page")
+    content_url: str = Field("", max_length=_IRI_MAX, description="download URL of the data file")
+    record_id: str = Field("", max_length=_IRI_MAX, description="IRI of the metadata record, the CDIF document's @id")
+    version: str = Field("", max_length=_SHORT_MAX)
+    license: str = Field(
+        "", max_length=_IRI_MAX, description="licence URI, e.g. https://creativecommons.org/licenses/by/4.0/"
+    )
+    language: str = Field("", max_length=_SHORT_MAX)
+    keywords: list[ShortStr] = Field(default_factory=list, max_length=_LIST_MAX)
     date_published: str = Field("", pattern=_ISO_DATE)
     date_modified: str = Field("", pattern=_ISO_DATE)
-    creators: list[AgentIO] = Field(default_factory=list)
+    creators: list[AgentIO] = Field(default_factory=list, max_length=_AGENTS_MAX)
     publisher: AgentIO | None = None
-    contributors: list[AgentIO] = Field(default_factory=list)
+    contributors: list[AgentIO] = Field(default_factory=list, max_length=_AGENTS_MAX)
     temporal_start: str = Field("", pattern=_ISO_DATE, description="start of the period the data are about")
     temporal_end: str = Field("", pattern=_ISO_DATE)
-    spatial: list[str] = Field(default_factory=list, description="places the data cover, e.g. countries")
-    funding: list[GrantIO] = Field(default_factory=list)
+    spatial: list[ShortStr] = Field(
+        default_factory=list, max_length=_LIST_MAX, description="places the data cover, e.g. countries"
+    )
+    funding: list[GrantIO] = Field(default_factory=list, max_length=_FUNDING_MAX)
 
     @classmethod
     def from_info(cls, info: DatasetInfo) -> "DatasetInfoIO":
@@ -220,7 +242,7 @@ class NewVariableIn(BaseModel):
     missing: list[dict[str, Any]] = Field(default_factory=list)
     role: str = "measure"
     fill: Literal["empty", "constant", "copy"] = "empty"
-    fill_value: str = ""
+    fill_value: str = Field("", max_length=settings.max_cell_chars)
     position: int | None = None
     unit_of_measure: str | None = None
     concepts: list[dict[str, Any]] = Field(default_factory=list)
@@ -229,6 +251,13 @@ class NewVariableIn(BaseModel):
 
 class CellsIn(BaseModel):
     values: dict[str, str | None]
+
+    @field_validator("values")
+    @classmethod
+    def _cell_length(cls, value: dict[str, str | None]) -> dict[str, str | None]:
+        if any(v is not None and len(v) > settings.max_cell_chars for v in value.values()):
+            raise ValueError(f"Cell values may be at most {settings.max_cell_chars} characters")
+        return value
 
 
 class HealthOut(BaseModel):

@@ -29,7 +29,8 @@ DDI-CDI 1.1beta JSON-LD that DDI-CDI Studio writes. Changes against upstream
     through; a header dateModified replaces the unknown-date placeholder.
   - schema:identifier gets a schema:propertyID: the identifiers.org DOI or ARK
     scheme as an IRI, otherwise a name for the kind of identifier; a DOI also
-    gets its bare value and a doi.org schema:url.
+    gets its bare value and a doi.org schema:url. ARK detection runs in linear
+    time (``is_ark``), not with a backtracking regex search.
   - The countRows / countColumns propertyID is an IRI reference, not a string
     (the CDIF shapes reject a URI-shaped string literal).
   - A variable's concepts are also its schema:propertyID.
@@ -153,7 +154,25 @@ HEADER_PASSTHROUGH = ("schema:url", "schema:version", "schema:creator",
 
 IDENTIFIERS_ORG = "https://registry.identifiers.org/registry/"
 DOI_RE = re.compile(r"^(?:https?://(?:dx\.)?doi\.org/|doi:)?(10\.\d{4,9}/\S+)$", re.I)
-ARK_RE = re.compile(r"(?:^|/)(ark:/?\d{5,}/\S+)$")
+# Local patch (not upstream): the former ARK_RE, r"(?:^|/)(ark:/?\d{5,}/\S+)$" run
+# with search(), backtracked quadratically on a long identifier made of repeated
+# ARK-like prefixes that does not end the string. is_ark() gives the same answer
+# in linear time: it matches only inside the trailing whitespace-free run.
+# DOI_RE is anchored and matched once from the start, so it is already linear.
+_ARK_AT_START = re.compile(r"(?:^|/)ark:/?\d{5,}/\S+\Z")
+_ARK_AFTER_SLASH = re.compile(r"/ark:/?\d{5,}/\S+\Z")
+
+
+def is_ark(ident):
+    """Whether ``ident`` ends in an ARK (``ark:/NAAN/name``), at its start or after a '/'."""
+    text = ident[:-1] if ident.endswith("\n") else ident  # ``$`` also matched before a final newline
+    if not text or text[-1].isspace():
+        return False
+    tail = text.split()[-1]
+    if len(tail) == len(text):
+        return _ARK_AT_START.search(tail) is not None
+    # The run follows whitespace, so the ARK cannot start at its first character.
+    return _ARK_AFTER_SLASH.search(tail) is not None
 
 # Media types for the binary files a StructuredDataSet describes, by extension.
 ENCODING_FORMATS = {
@@ -198,7 +217,7 @@ def identifier_node(ident):
     """An identifier string -> schema:PropertyValue with a schema:propertyID."""
     node = {"@type": ["schema:PropertyValue"], "schema:value": ident}
     doi = DOI_RE.match(ident)
-    ark = ARK_RE.search(ident)
+    ark = is_ark(ident)
     if doi:
         node["schema:propertyID"] = {"@id": IDENTIFIERS_ORG + "doi"}
         node["schema:value"] = doi.group(1)

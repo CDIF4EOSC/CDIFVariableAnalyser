@@ -38,6 +38,12 @@ class UploadStore:
         return self.root / file_id
 
     def create(self, filename: str, content: bytes) -> tuple[str, Dataset]:
+        # Reclaim expired uploads first, so a full disk can recover even when this
+        # upload then fails to write.
+        try:
+            self.cleanup_expired()
+        except Exception:
+            pass
         file_id = uuid.uuid4().hex
         d = self._dir(file_id)
         d.mkdir(parents=True)
@@ -85,8 +91,15 @@ class UploadStore:
     def cleanup_expired(self) -> int:
         now = time.time()
         removed = 0
-        for d in self.root.iterdir():
-            if d.is_dir() and now - d.stat().st_mtime > self.ttl:
-                shutil.rmtree(d, ignore_errors=True)
-                removed += 1
+        try:
+            entries = list(self.root.iterdir())
+        except OSError:
+            return 0
+        for d in entries:
+            try:
+                if d.is_dir() and now - d.stat().st_mtime > self.ttl:
+                    shutil.rmtree(d, ignore_errors=True)
+                    removed += 1
+            except OSError:
+                continue
         return removed

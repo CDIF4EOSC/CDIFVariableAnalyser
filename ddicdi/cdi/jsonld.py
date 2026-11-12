@@ -16,6 +16,7 @@ from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Any, Iterable
 
+from ..config import settings
 from ..data import Dataset
 from ..models import Concept, DatasetMeta, Variable, format_number
 from . import statistics
@@ -217,9 +218,23 @@ def generate_WideDataSet(meta: DatasetMeta, spssfile: str) -> list[Element]:
     }]
 
 
-def _components_for(meta: DatasetMeta, variable: str) -> list[str]:
+@dataclass(frozen=True)
+class _RoleSets:
+    """The role lists as sets, so a membership test is O(1) rather than a list scan."""
+
+    identifier: frozenset[str]
+    attribute: frozenset[str]
+    measure: frozenset[str]
+
+    @classmethod
+    def of(cls, meta: DatasetMeta) -> "_RoleSets":
+        r = meta.roles
+        return cls(frozenset(r.identifier), frozenset(r.attribute), frozenset(r.measure))
+
+
+def _components_for(meta: DatasetMeta, variable: str, roles: _RoleSets | None = None) -> list[str]:
     """Component references of one variable, in the original order (identifier, attribute, measure)."""
-    r = meta.roles
+    r = roles or _RoleSets.of(meta)
     refs = []
     if variable in r.identifier:
         refs.append(f"#identifierComponent-{variable}")
@@ -228,6 +243,46 @@ def _components_for(meta: DatasetMeta, variable: str) -> list[str]:
     if variable in r.measure or not (variable in r.identifier or variable in r.attribute):
         refs.append(f"#measureComponent-{variable}")
     return refs
+
+
+def _component_refs(meta: DatasetMeta) -> list[str]:
+    """Every component reference, variable by variable, in column order."""
+    roles = _RoleSets.of(meta)
+    return [ref for v in meta.column_names for ref in _components_for(meta, v, roles)]
+
+
+def _measure_names(meta: DatasetMeta) -> list[str]:
+    roles = _RoleSets.of(meta)
+    return [v for v in meta.column_names if f"#measureComponent-{v}" in _components_for(meta, v, roles)]
+
+
+def _present(names: list[str], meta: DatasetMeta) -> list[str]:
+    """``names`` that are columns of ``meta``, each once, in their own order."""
+    columns = set(meta.column_names)
+    return [v for v in dict.fromkeys(names) if v in columns]
+
+
+def check_budget(meta: DatasetMeta) -> None:
+    """Refuse a document whose size grows past the configured limits.
+
+    The variable count bounds every per-variable list, and attributes x measures
+    bounds the ``qualifies`` references (each attribute qualifies every other
+    measure), which would otherwise grow with the square of the variable count.
+    """
+    n_vars = len(meta.variables)
+    if n_vars > settings.max_variables:
+        raise ValueError(
+            f"The dataset has {n_vars} variables; at most {settings.max_variables} can be converted"
+        )
+    attributes = len(_present(meta.roles.attribute, meta))
+    if attributes:
+        refs = attributes * len(_measure_names(meta))
+        if refs > settings.max_qualifies_refs:
+            raise ValueError(
+                f"{attributes} attribute variables would each qualify every measure "
+                f"({refs} references; the limit is {settings.max_qualifies_refs}). "
+                "Mark fewer variables as attribute."
+            )
 
 
 def generate_WideDataStructure(meta: DatasetMeta) -> list[Element]:
@@ -239,17 +294,14 @@ def generate_WideDataStructure(meta: DatasetMeta) -> list[Element]:
     }
     if meta.roles.identifier:
         el["has_PrimaryKey"] = "#primaryKey"
-    position = 0
-    for v in meta.column_names:
-        for ref in _components_for(meta, v):
-            el["has_DataStructureComponent"].append(ref)
-            el["has_ComponentPosition"].append(f"#componentPosition-{position}")
-            position += 1
+    for position, ref in enumerate(_component_refs(meta)):
+        el["has_DataStructureComponent"].append(ref)
+        el["has_ComponentPosition"].append(f"#componentPosition-{position}")
     return [el]
 
 
 def generate_MeasureComponent(meta: DatasetMeta) -> list[Element]:
-    names = [v for v in meta.column_names if f"#measureComponent-{v}" in _components_for(meta, v)]
+    names = _measure_names(meta)
     return [{
         "@id": f"#measureComponent-{v}",
         "@type": "MeasureComponent",
@@ -262,7 +314,7 @@ def generate_IdentifierComponent(meta: DatasetMeta) -> list[Element]:
         "@id": f"#identifierComponent-{v}",
         "@type": "IdentifierComponent",
         "isDefinedBy_RepresentedVariable": f"#instanceVariable-{v}",
-    } for v in meta.roles.identifier if v in meta.column_names]
+    } for v in _present(meta.roles.identifier, meta)]
 
 
 def generate_AttributeComponent(meta: DatasetMeta) -> list[Element]:
@@ -270,9 +322,7 @@ def generate_AttributeComponent(meta: DatasetMeta) -> list[Element]:
     # measure (``qualifies`` is what CDIF's cdif:qualifies is made from).
     measures = [c["@id"] for c in generate_MeasureComponent(meta)]
     out = []
-    for v in meta.roles.attribute:
-        if v not in meta.column_names:
-            continue
+    for v in _present(meta.roles.attribute, meta):
         el: Element = {
             "@id": f"#attributeComponent-{v}",
             "@type": "AttributeComponent",
@@ -291,7 +341,7 @@ def generate_PrimaryKey(meta: DatasetMeta) -> list[Element]:
     return [{
         "@id": "#primaryKey",
         "@type": "PrimaryKey",
-        "isComposedOf": [f"#primaryKeyComponent-{v}" for v in meta.roles.identifier if v in meta.column_names],
+        "isComposedOf": [f"#primaryKeyComponent-{v}" for v in _present(meta.roles.identifier, meta)],
     }]
 
 
@@ -300,22 +350,16 @@ def generate_PrimaryKeyComponent(meta: DatasetMeta) -> list[Element]:
         "@id": f"#primaryKeyComponent-{v}",
         "@type": "PrimaryKeyComponent",
         "correspondsTo_DataStructureComponent": f"#identifierComponent-{v}",
-    } for v in meta.roles.identifier if v in meta.column_names]
+    } for v in _present(meta.roles.identifier, meta)]
 
 
 def generate_ComponentPosition(meta: DatasetMeta) -> list[Element]:
-    out: list[Element] = []
-    position = 0
-    for v in meta.column_names:
-        for ref in _components_for(meta, v):
-            out.append({
-                "@id": f"#componentPosition-{position}",
-                "@type": "ComponentPosition",
-                "value": position,
-                "indexes": ref,
-            })
-            position += 1
-    return out
+    return [{
+        "@id": f"#componentPosition-{position}",
+        "@type": "ComponentPosition",
+        "value": position,
+        "indexes": ref,
+    } for position, ref in enumerate(_component_refs(meta))]
 
 
 # -- variables and value domains -----------------------------------------------------
@@ -323,6 +367,7 @@ def generate_ComponentPosition(meta: DatasetMeta) -> list[Element]:
 
 def generate_InstanceVariable(meta: DatasetMeta, described: Collection[str] = ()) -> list[Element]:
     """``described`` names the variables that have a ``StatisticsCollection`` in the document."""
+    described = set(described)
     out: list[Element] = []
     for var in meta.variables:
         el: Element = {
@@ -551,6 +596,7 @@ def build_document(dataset: Dataset, spssfile: str | None = None, options: Gener
     """Build the JSON-LD document as a Python dict."""
     options = options or GenerateOptions()
     meta = dataset.meta
+    check_budget(meta)
     spssfile = spssfile or meta.datafile
 
     if options.process_all_rows:

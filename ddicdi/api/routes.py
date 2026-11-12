@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, Request, Response, UploadFile
 from pydantic import ValidationError
+from starlette.concurrency import run_in_threadpool
 
 from .. import __version__, editing, enrich, stats, vocabularies
 from ..cdi.jsonld import GenerateOptions, build_document, generate_complete_json_ld
@@ -89,8 +91,31 @@ def _generate(store: UploadStore, file_id: str, req: GenerateRequest, fmt: Outpu
     return _download(_jsonld(dataset, req), dataset.meta.datafile)
 
 
+def _check_output_size(dataset: Dataset, req: GenerateRequest | OutputRequest) -> None:
+    """Refuse a request whose data rows would not fit in memory (``max_output_cells``).
+
+    Every included cell is built as several JSON-LD objects in one in-memory document,
+    so the row count a caller asks for is bounded here before any of it is built.
+    """
+    limit = settings.max_output_cells
+    if limit <= 0:
+        return
+    meta = dataset.meta
+    n_vars = max(len(meta.variables), 1)
+    rows = meta.number_rows if req.process_all_rows else min(req.max_rows, meta.number_rows)
+    if rows * n_vars > limit:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"The output would hold {rows:,} rows x {n_vars:,} variables = {rows * n_vars:,} data cells; "
+                f"the limit is {limit:,}. Ask for at most {limit // n_vars:,} rows, or 0 rows for metadata only."
+            ),
+        )
+
+
 def _jsonld(dataset: Dataset, req: GenerateRequest | OutputRequest) -> str:
     """The JSON-LD document for a generate or output request."""
+    _check_output_size(dataset, req)
     return _stats(  # statistics are the only part that can fail on a bad weight or qsv
         generate_complete_json_ld,
         dataset,
@@ -172,6 +197,42 @@ def info() -> dict:
 
 # -- session style --------------------------------------------------------------------
 
+_import_slots: threading.BoundedSemaphore | None = None
+
+
+def _bounded(fn, *args):
+    """Run ``fn`` holding one of ``settings.max_concurrent_imports`` slots.
+
+    Called in the thread pool, so a waiting import blocks a worker thread, never the
+    event loop. A thread semaphore (not asyncio) works across event loops.
+    """
+    global _import_slots
+    if _import_slots is None:
+        _import_slots = threading.BoundedSemaphore(max(1, settings.max_concurrent_imports))
+    with _import_slots:
+        return fn(*args)
+
+
+async def _read_upload(file: UploadFile) -> bytes:
+    """The upload's bytes; 413 as soon as it exceeds ``settings.max_upload_bytes``."""
+    limit = settings.max_upload_bytes
+    chunks: list[bytes] = []
+    size = 0
+    while chunk := await file.read(1 << 20):
+        size += len(chunk)
+        if limit and size > limit:
+            raise HTTPException(status_code=413, detail=f"Upload larger than the limit of {limit} bytes")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+async def _create(store: UploadStore, filename: str, content: bytes):
+    """Import off the event loop, so other requests are served while qsv runs."""
+    try:
+        return await run_in_threadpool(_bounded, store.create, filename, content)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not import file: {exc}")
+
 
 @router.post("/files", response_model=FileInfo, dependencies=[Depends(require_api_key)])
 async def upload(
@@ -182,13 +243,11 @@ async def upload(
     ext = Path(file.filename or "").suffix.lower()
     if ext not in SUPPORTED_EXTENSIONS:
         raise HTTPException(status_code=400, detail=f"Unsupported file type {ext!r}")
-    content = await file.read()
-    try:
-        file_id, dataset = store.create(file.filename or "upload", content)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Could not import file: {exc}")
+    content = await _read_upload(file)
+    file_id, dataset = await _create(store, file.filename or "upload", content)
     store.cleanup_expired()
-    return FileInfo.from_meta(file_id, dataset.meta, dataset.preview(preview_rows))
+    rows = await run_in_threadpool(dataset.preview, preview_rows)
+    return FileInfo.from_meta(file_id, dataset.meta, rows)
 
 
 @router.get("/files/{file_id}", response_model=FileInfo, dependencies=[Depends(require_api_key)])
@@ -251,6 +310,8 @@ def _edit(fn, *args):
         return fn(*args)
     except editing.EditError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    except OSError as exc:  # e.g. ENOSPC; the rewrite has already removed its temp file
+        raise HTTPException(status_code=507, detail=f"Edit failed, the server could not store the data: {exc.strerror or exc}")
 
 
 def _var_out(dataset: Dataset, name: str) -> VariableOut:
@@ -465,11 +526,8 @@ async def convert_once(
     ext = Path(file.filename or "").suffix.lower()
     if ext not in SUPPORTED_EXTENSIONS:
         raise HTTPException(status_code=400, detail=f"Unsupported file type {ext!r}")
-    content = await file.read()
-    try:
-        file_id, _ = store.create(file.filename or "upload", content)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Could not import file: {exc}")
+    content = await _read_upload(file)
+    file_id, _ = await _create(store, file.filename or "upload", content)
     try:
         try:
             req = GenerateRequest(
@@ -486,6 +544,6 @@ async def convert_once(
             )
         except ValidationError as exc:
             raise HTTPException(status_code=400, detail=str(exc.errors()[0]["msg"]))
-        return _generate(store, file_id, req, output_format)  # type: ignore[arg-type]
+        return await run_in_threadpool(_bounded, _generate, store, file_id, req, output_format)
     finally:
         store.delete(file_id)

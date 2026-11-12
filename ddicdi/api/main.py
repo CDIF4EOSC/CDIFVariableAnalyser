@@ -20,7 +20,26 @@ from .store import UploadStore
 FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 
 
-def create_app() -> FastAPI:
+def _dist_file(dist_root: Path, path: str) -> Path | None:
+    """The file under ``dist_root`` that ``path`` names, or ``None``.
+
+    ``path`` comes straight from the URL (already percent-decoded), so it may hold
+    ``..`` segments, a leading slash (an absolute path makes ``pathlib`` drop the
+    root) or a NUL byte. The candidate is resolved, symlinks included, and only
+    served when it is still inside the resolved dist directory.
+    """
+    if not path or "\x00" in path:
+        return None
+    try:
+        candidate = (dist_root / path.lstrip("/")).resolve()
+        if candidate.is_relative_to(dist_root) and candidate.is_file():
+            return candidate
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def create_app(frontend_dist: Path | None = None) -> FastAPI:
     app = FastAPI(
         title="DDI-CDI Converter API (gen2)",
         version=__version__,
@@ -40,17 +59,17 @@ def create_app() -> FastAPI:
     def favicon() -> Response:
         return Response(status_code=204)
 
-    if (FRONTEND_DIST / "index.html").exists():
+    dist = (frontend_dist or FRONTEND_DIST).resolve()
+    if (dist / "index.html").exists():
         # Built React editor (``cd frontend && npm run build``) served at /app.
-        app.mount("/app/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="app-assets")
+        app.mount("/app/assets", StaticFiles(directory=dist / "assets"), name="app-assets")
 
         @app.get("/app", include_in_schema=False)
         @app.get("/app/{path:path}", include_in_schema=False)
         def spa(path: str = "") -> FileResponse:
-            candidate = FRONTEND_DIST / path
-            if path and candidate.is_file():
-                return FileResponse(candidate)
-            return FileResponse(FRONTEND_DIST / "index.html")
+            # A top-level file of the build (favicon ...) or else index.html, so
+            # client-side routes work; never a file outside the dist directory.
+            return FileResponse(_dist_file(dist, path) or dist / "index.html")
 
         @app.get("/", include_in_schema=False)
         def root() -> RedirectResponse:

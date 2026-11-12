@@ -16,10 +16,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+from .config import settings
 from .data import Dataset
 from .models import Concept, DatasetMeta, MissingRange, Variable, normalize_number
 from .functions import parse_functions
-from .roles import ROLE_NAMES, parse_roles
+from .roles import ROLE_NAMES, parse_roles, split_roles
 
 _NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.@#$]*$")
 _NUMERIC_TYPES = {"double", "float", "int8", "int16", "int32", "int64", "numeric", "integer"}
@@ -99,14 +100,13 @@ def _parse_missing(var_numeric: bool, ranges: Iterable[dict[str, Any]]) -> list[
 
 
 def _set_role(meta: DatasetMeta, name: str, role: str) -> None:
+    try:
+        parts = split_roles(role, name)
+    except ValueError as exc:
+        raise EditError(str(exc))
     for r in ROLE_NAMES:
-        lst = getattr(meta.roles, r)
-        if name in lst:
-            lst.remove(name)
-    parts = [p.strip().lower() for p in role.split(",") if p.strip()] or ["measure"]
+        setattr(meta.roles, r, [n for n in getattr(meta.roles, r) if n != name])
     for p in parts:
-        if p not in ROLE_NAMES:
-            raise EditError(f"Unknown role {p!r}; valid: {ROLE_NAMES}")
         getattr(meta.roles, p).append(name)
 
 
@@ -117,9 +117,10 @@ def ensure_roles(meta: DatasetMeta) -> None:
         if name not in assigned:
             meta.roles.measure.append(name)
     # drop roles of variables that no longer exist
+    # (and list each variable once per role, also in metadata saved before that rule)
     names = set(meta.column_names)
     for r in ROLE_NAMES:
-        setattr(meta.roles, r, [n for n in getattr(meta.roles, r) if n in names])
+        setattr(meta.roles, r, [n for n in dict.fromkeys(getattr(meta.roles, r)) if n in names])
 
 
 def set_roles(meta: DatasetMeta, assignments: dict[str, str]) -> None:
@@ -188,25 +189,75 @@ def update_variable(meta: DatasetMeta, name: str, patch: VariablePatch) -> Varia
 # -- CSV rewriting -------------------------------------------------------------------
 
 
+def check_cell(value: str | None) -> None:
+    """Refuse a cell longer than ``settings.max_cell_chars``."""
+    if value is not None and len(str(value)) > settings.max_cell_chars:
+        raise EditError(f"Cell value is longer than {settings.max_cell_chars} characters")
+
+
+def _work_dir_usage(work_root: Path) -> int:
+    """Bytes in the upload directories under ``work_root`` (two levels deep)."""
+    total = 0
+    try:
+        uploads = list(os.scandir(work_root))
+    except OSError:
+        return 0
+    for entry in uploads:
+        try:
+            if entry.is_file(follow_symlinks=False):
+                total += entry.stat(follow_symlinks=False).st_size
+            elif entry.is_dir(follow_symlinks=False):
+                for f in os.scandir(entry.path):
+                    if f.is_file(follow_symlinks=False):
+                        total += f.stat(follow_symlinks=False).st_size
+        except OSError:
+            continue
+    return total
+
+
+def _size_limit(dataset: Dataset) -> int:
+    """The largest ``data.csv`` an edit may write: the per-file cap, lowered to what the
+    work-dir cap still allows (the current file is replaced, so its size counts as free)."""
+    limit = settings.edit_max_csv_bytes
+    if settings.work_dir_max_bytes > 0:
+        current = dataset.csv_path.stat().st_size if dataset.csv_path.exists() else 0
+        used = _work_dir_usage(dataset.csv_path.parent.parent)
+        limit = min(limit, settings.work_dir_max_bytes - used + current)
+    return limit
+
+
 def _rewrite(dataset: Dataset, transform: Callable[[list[str], int], list[str] | None], header: list[str]) -> int:
     """Stream ``data.csv`` through ``transform(row, index)``; returns the row count.
 
-    ``transform`` returns the new row or ``None`` to drop it.
+    ``transform`` returns the new row or ``None`` to drop it. The rewrite is refused
+    when the new file would pass :func:`_size_limit`; on any failure the temporary
+    file is removed and ``data.csv`` is left as it was.
     """
     src = dataset.csv_path
     tmp = src.with_suffix(".csv.tmp")
+    limit = _size_limit(dataset)
     count = 0
-    with src.open(newline="", encoding="utf-8") as fin, tmp.open("w", newline="", encoding="utf-8") as fout:
-        reader = csv.reader(fin)
-        writer = csv.writer(fout, lineterminator="\n")
-        next(reader, None)
-        writer.writerow(header)
-        for i, row in enumerate(reader):
-            new = transform(row, i)
-            if new is not None:
-                writer.writerow(new)
-                count += 1
-    os.replace(tmp, src)
+    try:
+        with src.open(newline="", encoding="utf-8") as fin, tmp.open("w", newline="", encoding="utf-8") as fout:
+            reader = csv.reader(fin)
+            writer = csv.writer(fout, lineterminator="\n")
+            next(reader, None)
+            # writerow returns the characters written; UTF-8 bytes can be more, so the
+            # cap is approximate for non-ASCII text but still bounds the file.
+            written = writer.writerow(header)
+            for i, row in enumerate(reader):
+                new = transform(row, i)
+                if new is not None:
+                    written += writer.writerow(new)
+                    count += 1
+                    if written > limit:
+                        raise EditError(
+                            f"Edit refused: the data file would exceed the storage limit of {max(limit, 0)} bytes"
+                        )
+        os.replace(tmp, src)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
     return count
 
 
@@ -251,6 +302,15 @@ def add_variable(dataset: Dataset, spec: NewVariable) -> Variable:
     )
 
     if spec.fill == "constant":
+        check_cell(spec.fill_value)
+        # Refuse before writing anything when the projected file is already too big.
+        current = dataset.csv_path.stat().st_size
+        projected = current + meta.number_rows * (len(spec.fill_value.encode("utf-8")) + 3)
+        limit = _size_limit(dataset)
+        if projected > limit:
+            raise EditError(
+                f"Edit refused: filling {meta.number_rows} rows would exceed the storage limit of {max(limit, 0)} bytes"
+            )
         cell_for: Callable[[list[str]], str] = lambda row: spec.fill_value
     elif spec.fill == "copy":
         if spec.fill_value not in meta.column_names:
@@ -319,6 +379,8 @@ def update_cells(dataset: Dataset, row_index: int, values: dict[str, str]) -> li
     unknown = set(values) - set(meta.column_names)
     if unknown:
         raise EditError(f"Unknown variables: {sorted(unknown)}")
+    for value in values.values():
+        check_cell(value)
     idx = {n: i for i, n in enumerate(meta.column_names)}
     result: list[str] = []
 
@@ -342,7 +404,13 @@ def append_row(dataset: Dataset, values: dict[str, str] | None = None) -> int:
     unknown = set(values) - set(meta.column_names)
     if unknown:
         raise EditError(f"Unknown variables: {sorted(unknown)}")
+    for value in values.values():
+        check_cell(value)
     row = ["" if values.get(n) is None else str(values.get(n, "")) for n in meta.column_names]
+    line_size = sum(len(c.encode("utf-8")) + 3 for c in row) + 1
+    limit = _size_limit(dataset)
+    if dataset.csv_path.stat().st_size + line_size > limit:
+        raise EditError(f"Edit refused: the data file would exceed the storage limit of {max(limit, 0)} bytes")
     with dataset.csv_path.open("a", newline="", encoding="utf-8") as fh:
         csv.writer(fh, lineterminator="\n").writerow(row)
     meta.number_rows += 1
