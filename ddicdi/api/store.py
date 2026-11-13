@@ -9,7 +9,9 @@ import time
 import uuid
 from pathlib import Path
 
+from ..config import settings
 from ..data import Dataset
+from ..editing import work_dir_usage
 from ..importers import import_file
 from ..models import DatasetMeta
 from ..qsv import Qsv
@@ -17,6 +19,10 @@ from ..qsv import Qsv
 
 class UploadNotFound(KeyError):
     pass
+
+
+class StorageFull(OSError):
+    """The work directory has no room for the upload under ``work_dir_max_bytes``."""
 
 
 class UploadStore:
@@ -44,18 +50,31 @@ class UploadStore:
             self.cleanup_expired()
         except Exception:
             pass
+        quota = settings.work_dir_max_bytes
+        if quota > 0 and work_dir_usage(self.root) + len(content) > quota:
+            raise StorageFull(f"the server's upload storage is full (limit {quota} bytes); try again later")
         file_id = uuid.uuid4().hex
         d = self._dir(file_id)
         d.mkdir(parents=True)
         safe_name = Path(filename).name or "upload"
         src = d / f"source{Path(safe_name).suffix.lower()}"
-        src.write_bytes(content)
         try:
+            src.write_bytes(content)
             dataset = import_file(src, d, self.qsv, datafile=safe_name)
+            n_vars = len(dataset.meta.variables)
+            if settings.max_variables > 0 and n_vars > settings.max_variables:
+                raise ValueError(f"the file has {n_vars} variables; the limit is {settings.max_variables}")
+            # The expanded data.csv (and the source) now count; imports running at the
+            # same time see each other's files, so the cap is passed by at most the
+            # imports in flight.
+            self.save_meta(file_id, dataset.meta)
+            if quota > 0 and work_dir_usage(self.root) > quota:
+                raise StorageFull(
+                    f"the imported data does not fit in the server's upload storage (limit {quota} bytes)"
+                )
         except Exception:
             shutil.rmtree(d, ignore_errors=True)
             raise
-        self.save_meta(file_id, dataset.meta)
         return file_id, dataset
 
     def save_meta(self, file_id: str, meta: DatasetMeta) -> None:

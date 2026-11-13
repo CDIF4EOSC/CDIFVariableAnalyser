@@ -6,6 +6,7 @@ import csv
 from pathlib import Path
 from typing import Iterator
 
+from .config import settings
 from .models import DatasetMeta
 from .qsv import Qsv
 
@@ -64,6 +65,22 @@ class Dataset:
         if chunk:
             yield start, chunk
 
+    def page(self, offset: int, n: int) -> list[list[str]]:
+        """Up to ``n`` records from ``offset`` for a response held in memory.
+
+        The row count is lowered so rows x columns stays within
+        ``settings.max_preview_cells``, and at most ``settings.max_preview_bytes`` of
+        CSV is read, so a very wide upload or very long cells give fewer rows rather than
+        an unbounded response.
+        """
+        n_cols = max(len(self.meta.column_names), 1)
+        if settings.max_preview_cells > 0:
+            n = min(n, settings.max_preview_cells // n_cols)
+        if n <= 0:
+            return []
+        rows = self.qsv.slice(self.csv_path, offset, n, max_bytes=max(settings.max_preview_bytes, 0))
+        return [self._normalize_row(r) for r in rows]
+
     def preview(self, n: int) -> list[dict[str, str]]:
         names = self.meta.column_names
-        return [dict(zip(names, row)) for row in self.head(n)]
+        return [dict(zip(names, row)) for row in self.page(0, n)]

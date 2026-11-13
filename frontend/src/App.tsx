@@ -13,7 +13,7 @@ import { OptionsPopover } from "./components/OptionsPopover";
 import { StatisticsPanel } from "./components/StatisticsPanel";
 import { Toasts, type Toast } from "./components/Toasts";
 import { UploadScreen } from "./components/UploadScreen";
-import type { Concept, DatasetInfo, Vocabularies, EnrichKind, FileInfo, JsonLdDoc, Options, OutputFormat, PreviewPage, Statistics, Suggestion } from "./types";
+import type { Concept, DatasetInfo, Vocabularies, EnrichKind, EnrichResponse, FileInfo, JsonLdDoc, Options, OutputFormat, PreviewPage, Statistics, Suggestion } from "./types";
 import { ALL_STAT_NAMES, ENRICH_KINDS, sameFunctions } from "./types";
 
 interface Edit {
@@ -35,6 +35,9 @@ const FORMAT_LABEL: Record<OutputFormat, string> = { ddicdi: "DDI-CDI", cdif: "C
 
 // The live preview never streams the whole file; the download does.
 const PREVIEW_MAX_ROWS = 50;
+
+// Variables per enrich request: the server's DDI_MAX_ENRICH_VARIABLES default.
+const ENRICH_CHUNK = 200;
 
 type View = "meta" | "data" | "stats" | "dataset";
 
@@ -515,8 +518,13 @@ export default function App() {
     const keys = targets.flatMap((t) => kinds.map((k) => `${t}|${k}`));
     setEnriching((s) => new Set([...s, ...keys]));
     try {
-      const res = await api.enrich(fid, { variables: names ?? undefined, kinds });
-      if (fileIdRef.current !== fid) return; // file was closed or replaced meanwhile
+      const res: EnrichResponse = { suggestions: [], errors: [] };
+      for (let i = 0; i < targets.length; i += ENRICH_CHUNK) {
+        const part = await api.enrich(fid, { variables: targets.slice(i, i + ENRICH_CHUNK), kinds });
+        if (fileIdRef.current !== fid) return; // file was closed or replaced meanwhile
+        res.suggestions.push(...part.suggestions);
+        res.errors.push(...part.errors);
+      }
       const byName = new Map(info.variables.map((v) => [v.name, v]));
       let units = 0;
       let concepts = 0;

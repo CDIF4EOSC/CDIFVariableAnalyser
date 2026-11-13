@@ -42,6 +42,12 @@ class Settings(BaseSettings):
     qsv_max_memory_bytes: int = 0
     max_upload_bytes: int = 512 * 1024**2
     max_concurrent_imports: int = 2
+    # Admission control (security #7). A request that finds every import (or document
+    # build) slot taken waits without holding a worker thread, but at most
+    # ``max_queued_requests`` wait per limiter and none longer than ``queue_timeout``
+    # seconds; the rest get a 503 with Retry-After at once.
+    max_queued_requests: int = 8
+    queue_timeout: float = 60.0
     default_max_rows: int = 5
     chunk_size: int = 500
     upload_ttl_seconds: int = 6 * 3600
@@ -82,13 +88,27 @@ class Settings(BaseSettings):
     n8n_bearer_key: str = ""
     n8n_timeout: float = 120.0
     n8n_concurrency: int = 5
+    # Bounds on enrichment (security #11): variables per request (the editor splits
+    # larger selections), enrich requests running at once in the process, and the wall
+    # clock of one request; calls still outstanding then are cancelled.
+    max_enrich_variables: int = 200
+    max_concurrent_enrich: int = 2
+    enrich_deadline: float = 900.0
 
     # Most data cells (rows x variables) one generated document may carry. Every cell
     # becomes an InstanceValue, a DataPoint and a DataPointPosition, held in memory and
     # serialised in one piece: about 5.4 KB of peak memory per cell, so the default
     # keeps one request near 1.3 GB on the 3.5 GB App Service B2 plan. Larger requests
-    # are refused with 413; 0 or less turns the limit off.
+    # are refused with 413; 0 or less turns the limit off. The limit is also the budget
+    # shared by every build in flight (security #8), so concurrent requests cannot add up
+    # past it; ``max_concurrent_builds`` caps how many builds run at once.
     max_output_cells: int = 250_000
+
+    # Row previews (preview, file info, upload): rows x columns and bytes of CSV per
+    # response (security #9). A wide upload or long cells give fewer rows. 0 = off.
+    max_preview_cells: int = 50_000
+    max_preview_bytes: int = 4 * 1024**2
+    max_concurrent_builds: int = 4
 
 
 settings = Settings()

@@ -41,7 +41,12 @@ from .roles import ROLE_NAMES
 
 BASE_UNIT_URI = "http://publications.europa.eu/resource/authority/measurement-unit/"
 MAX_VALUE_LABELS = 15  # the workflows' cap too
-ATTEMPTS = 3
+ATTEMPTS = 3  # total POSTs per batch or variable, retries included
+# Longest text forwarded to the workflows (security #11); labels are cut, a variable
+# whose name is longer is not sent (the name has to come back unchanged to match).
+MAX_NAME_CHARS = 128
+MAX_LABEL_CHARS = 500
+MAX_VALUE_LABEL_CHARS = 200
 KINDS = ("unit", "concept", "role", "function", "measure")
 FIELD_BY_KIND = {
     "unit": "unit_of_measure",
@@ -89,6 +94,23 @@ class EnrichError(RuntimeError):
     """A webhook call failed after all attempts."""
 
 
+class _Refused(EnrichError):
+    """n8n answered 4xx: retrying will not help."""
+
+
+class _Limited:
+    """The request's ``httpx`` client with every POST behind one shared semaphore, so all
+    kinds together keep at most ``settings.n8n_concurrency`` calls in flight."""
+
+    def __init__(self, client: httpx.AsyncClient, concurrency: int) -> None:
+        self._client = client
+        self._sem = asyncio.Semaphore(max(1, concurrency))
+
+    async def post(self, *args: Any, **kwargs: Any) -> httpx.Response:
+        async with self._sem:
+            return await self._client.post(*args, **kwargs)
+
+
 @dataclass
 class EnrichResult:
     suggestions: dict[str, dict[str, Any]] = field(default_factory=dict)  # name -> {unit_of_measure?, concepts?, role?, functions?}
@@ -114,10 +136,13 @@ def variable_input(var: Variable) -> dict[str, Any]:
     the measure workflow, which drops ``variable_measure`` so it is not echoed back.
     Value labels are the substantive ones, capped at ``MAX_VALUE_LABELS``; missing codes
     go in ``variable_missing_values``. Empty fields are left out."""
-    labels = [{"value": c, "label": var.value_labels[c]} for c in var.substantive_codes()]
+    labels = [
+        {"value": c[:MAX_VALUE_LABEL_CHARS], "label": (var.value_labels[c] or "")[:MAX_VALUE_LABEL_CHARS]}
+        for c in var.substantive_codes()
+    ]
     item: dict[str, Any] = {
         "variable_name": var.name,
-        "variable_label": var.label,
+        "variable_label": (var.label or "")[:MAX_LABEL_CHARS],
         "variable_datatype": var.storage_type,
         "variable_format": var.format,
         "variable_measure": var.measure if var.measure != "unknown" else None,
@@ -226,13 +251,15 @@ def measure_from_result(row: dict) -> str | None:
 # -- HTTP ---------------------------------------------------------------------------------
 
 
-async def _post(client: httpx.AsyncClient, url: str, payload: dict, headers: dict[str, str]) -> dict:
+async def _post(
+    client: httpx.AsyncClient, url: str, payload: dict, headers: dict[str, str], attempts: int = ATTEMPTS
+) -> dict:
     last = "no attempts"
-    for attempt in range(ATTEMPTS):
+    for attempt in range(attempts):
         try:
             r = await client.post(url, json=payload, headers=headers)
             if 400 <= r.status_code < 500:
-                raise EnrichError(f"n8n returned {r.status_code}: {r.text[:200]}")
+                raise _Refused(f"n8n returned {r.status_code}: {r.text[:200]}")
             r.raise_for_status()
             data = r.json()
             if isinstance(data, list) and len(data) == 1 and isinstance(data[0], dict):
@@ -244,9 +271,9 @@ async def _post(client: httpx.AsyncClient, url: str, payload: dict, headers: dic
             raise
         except (httpx.HTTPError, ValueError) as exc:
             last = f"{type(exc).__name__}: {exc}"
-        if attempt < ATTEMPTS - 1:
+        if attempt < attempts - 1:
             await asyncio.sleep(2 * BACKOFF * (attempt + 1))
-    raise EnrichError(f"n8n call failed after {ATTEMPTS} attempts ({last})")
+    raise EnrichError(f"n8n call failed after {attempts} attempts ({last})")
 
 
 def _batches(variables: list[Variable]) -> list[list[Variable]]:
@@ -351,30 +378,33 @@ async def suggest_measures(
 
 
 async def suggest_concepts(
-    client: httpx.AsyncClient, variables: list[Variable], headers: dict[str, str], url: str, concurrency: int
+    client: httpx.AsyncClient, variables: list[Variable], headers: dict[str, str], url: str
 ) -> tuple[dict[str, list[dict[str, str]]], list[dict[str, Any]]]:
-    sem = asyncio.Semaphore(max(1, concurrency))
+    """One call per variable. Transport errors and the n8n loop bug (an empty or
+    mismatched result) share one budget of ``ATTEMPTS`` POSTs per variable."""
     out: dict[str, list[dict[str, str]]] = {}
     errors: list[dict[str, Any]] = []
 
     async def one(v: Variable) -> None:
-        async with sem:
-            last = ""
-            for attempt in range(ATTEMPTS):
-                try:
-                    data = await _post(client, url, {"variables": [variable_input(v)]}, headers)
-                except EnrichError as exc:
-                    errors.append({"name": v.name, "kind": "concept", "message": str(exc)})
-                    return
+        last = ""
+        for attempt in range(ATTEMPTS):
+            try:
+                data = await _post(client, url, {"variables": [variable_input(v)]}, headers, attempts=1)
+            except _Refused as exc:
+                errors.append({"name": v.name, "kind": "concept", "message": str(exc)})
+                return
+            except EnrichError as exc:
+                last = str(exc)
+            else:
                 rows = [r for r in data.get("results", []) if isinstance(r, dict)]
                 hit = next((r for r in rows if r.get("variable_name") == v.name), None)
                 if hit is not None:
                     out[v.name] = normalize_concepts(hit.get("elsst_concepts"))
                     return
                 last = "empty or mismatched result"  # the n8n loop bug; retry
-                if attempt < ATTEMPTS - 1:
-                    await asyncio.sleep(BACKOFF * (attempt + 1))
-            errors.append({"name": v.name, "kind": "concept", "message": last})
+            if attempt < ATTEMPTS - 1:
+                await asyncio.sleep(BACKOFF * (attempt + 1))
+        errors.append({"name": v.name, "kind": "concept", "message": last})
 
     await asyncio.gather(*(one(v) for v in variables))
     return out, errors
@@ -386,29 +416,40 @@ async def enrich(
     *,
     client: httpx.AsyncClient | None = None,
 ) -> EnrichResult:
-    """Ask n8n for unit, concept, role, function and/or measure suggestions. Raises ``NotConfigured`` without a key."""
+    """Ask n8n for unit, concept, role, function and/or measure suggestions. Raises ``NotConfigured`` without a key.
+
+    One request is bounded: at most ``settings.max_enrich_variables`` variables (the
+    caller refuses more), ``settings.n8n_concurrency`` webhook calls in flight across all
+    kinds, ``ATTEMPTS`` POSTs per batch or variable, and ``settings.enrich_deadline``
+    seconds overall, after which outstanding calls are cancelled (``EnrichError``).
+    """
     if not settings.n8n_bearer_key:
         raise NotConfigured("AI enrichment is not configured (set DDI_N8N_BEARER_KEY)")
     kinds = set(kinds)
     headers = {"Authorization": settings.n8n_bearer_key}
     result = EnrichResult()
+    too_long = [v for v in variables if len(v.name) > MAX_NAME_CHARS]
+    variables = [v for v in variables if len(v.name) <= MAX_NAME_CHARS]
     own = client is None
     client = client or httpx.AsyncClient(timeout=settings.n8n_timeout)
+    limited: Any = _Limited(client, settings.n8n_concurrency)
     try:
         tasks = []
         if "unit" in kinds:
-            tasks.append(suggest_units(client, variables, headers, settings.n8n_unit_url))
+            tasks.append(suggest_units(limited, variables, headers, settings.n8n_unit_url))
         if "concept" in kinds:
-            tasks.append(
-                suggest_concepts(client, variables, headers, settings.n8n_concept_url, settings.n8n_concurrency)
-            )
+            tasks.append(suggest_concepts(limited, variables, headers, settings.n8n_concept_url))
         if "role" in kinds:
-            tasks.append(suggest_roles(client, variables, headers, settings.n8n_role_url))
+            tasks.append(suggest_roles(limited, variables, headers, settings.n8n_role_url))
         if "function" in kinds:
-            tasks.append(suggest_functions(client, variables, headers, settings.n8n_function_url))
+            tasks.append(suggest_functions(limited, variables, headers, settings.n8n_function_url))
         if "measure" in kinds:
-            tasks.append(suggest_measures(client, variables, headers, settings.n8n_measure_url))
-        outcomes = await asyncio.gather(*tasks)
+            tasks.append(suggest_measures(limited, variables, headers, settings.n8n_measure_url))
+        deadline = settings.enrich_deadline if settings.enrich_deadline > 0 else None
+        try:
+            outcomes = await asyncio.wait_for(asyncio.gather(*tasks), deadline)
+        except asyncio.TimeoutError:
+            raise EnrichError(f"AI enrichment took longer than {deadline:g}s and was stopped")
     finally:
         if own:
             await client.aclose()
@@ -418,4 +459,9 @@ async def enrich(
         for name, value in values.items():
             result.suggestions.setdefault(name, {"name": name})[field_name] = value
         result.errors.extend(errors)
+    for v in too_long:
+        for key in keys:
+            result.errors.append(
+                {"name": v.name, "kind": key, "message": f"name longer than {MAX_NAME_CHARS} characters; not sent"}
+            )
     return result

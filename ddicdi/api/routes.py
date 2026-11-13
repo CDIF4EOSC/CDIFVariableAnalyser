@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import threading
 from pathlib import Path
 from typing import Literal
 
@@ -38,7 +37,8 @@ from .schemas import (
     VariableOut,
     VariablePatchIn,
 )
-from .store import UploadNotFound, UploadStore
+from . import admission
+from .store import StorageFull, UploadNotFound, UploadStore
 
 router = APIRouter(prefix="/api")
 
@@ -77,8 +77,8 @@ def _save(store: UploadStore, file_id: str, dataset: Dataset) -> None:
     editing.touch(dataset.csv_path.parent)
 
 
-def _generate(store: UploadStore, file_id: str, req: GenerateRequest, fmt: OutputFormat = "ddicdi") -> Response:
-    dataset = _load(store, file_id)
+def _apply_roles(dataset: Dataset, req: GenerateRequest) -> None:
+    """The roles of a generate request, or the stored ones."""
     if req.roles:
         try:
             dataset.meta.roles = parse_roles(dataset.meta, req.roles)
@@ -86,9 +86,40 @@ def _generate(store: UploadStore, file_id: str, req: GenerateRequest, fmt: Outpu
             raise HTTPException(status_code=400, detail=str(exc))
     else:
         editing.ensure_roles(dataset.meta)
+
+
+def _render(dataset: Dataset, req: GenerateRequest | OutputRequest, fmt: OutputFormat) -> str:
+    return _cdif(dataset, req) if fmt == "cdif" else _jsonld(dataset, req)
+
+
+def _build_cost(dataset: Dataset, req: GenerateRequest | OutputRequest, fmt: OutputFormat) -> int:
+    """Estimated size of the document in data cells (see ``admission.builds``)."""
+    meta = dataset.meta
+    n_vars = max(len(meta.variables), 1)
     if fmt == "cdif":
-        return _download(_cdif(dataset, req), dataset.meta.datafile, "_CDIF.json")
-    return _download(_jsonld(dataset, req), dataset.meta.datafile)
+        rows = 0  # CDIF carries no data rows
+    else:
+        rows = meta.number_rows if req.process_all_rows else min(req.max_rows, meta.number_rows)
+    return rows * n_vars + admission.VARIABLE_COST * n_vars
+
+
+async def _render_admitted(dataset: Dataset, req: GenerateRequest | OutputRequest, fmt: OutputFormat) -> str:
+    """Build the document off the event loop, holding its size in the shared build budget.
+
+    An oversized request is refused (413) before it queues; the rest wait for room
+    without holding a worker thread, so the memory of all builds in flight is bounded.
+    """
+    if fmt != "cdif":
+        _check_output_size(dataset, req)
+    async with admission.builds.slot(_build_cost(dataset, req, fmt)):
+        return await run_in_threadpool(_render, dataset, req, fmt)
+
+
+async def _generate(store: UploadStore, file_id: str, req: GenerateRequest, fmt: OutputFormat = "ddicdi") -> Response:
+    dataset = await run_in_threadpool(_load, store, file_id)
+    _apply_roles(dataset, req)
+    content = await _render_admitted(dataset, req, fmt)
+    return _download(content, dataset.meta.datafile, "_CDIF.json" if fmt == "cdif" else "_DDICDI.jsonld")
 
 
 def _check_output_size(dataset: Dataset, req: GenerateRequest | OutputRequest) -> None:
@@ -197,22 +228,6 @@ def info() -> dict:
 
 # -- session style --------------------------------------------------------------------
 
-_import_slots: threading.BoundedSemaphore | None = None
-
-
-def _bounded(fn, *args):
-    """Run ``fn`` holding one of ``settings.max_concurrent_imports`` slots.
-
-    Called in the thread pool, so a waiting import blocks a worker thread, never the
-    event loop. A thread semaphore (not asyncio) works across event loops.
-    """
-    global _import_slots
-    if _import_slots is None:
-        _import_slots = threading.BoundedSemaphore(max(1, settings.max_concurrent_imports))
-    with _import_slots:
-        return fn(*args)
-
-
 async def _read_upload(file: UploadFile) -> bytes:
     """The upload's bytes; 413 as soon as it exceeds ``settings.max_upload_bytes``."""
     limit = settings.max_upload_bytes
@@ -226,12 +241,21 @@ async def _read_upload(file: UploadFile) -> bytes:
     return b"".join(chunks)
 
 
-async def _create(store: UploadStore, filename: str, content: bytes):
-    """Import off the event loop, so other requests are served while qsv runs."""
-    try:
-        return await run_in_threadpool(_bounded, store.create, filename, content)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Could not import file: {exc}")
+async def _create(store: UploadStore, file: UploadFile):
+    """Read and import an upload holding an import slot (see :mod:`.admission`).
+
+    The slot is taken before the body is read, so queued uploads stay in Starlette's
+    spooled temp file rather than in memory, and waiting holds no worker thread. The
+    import itself runs off the event loop, so other requests are served while qsv runs.
+    """
+    async with admission.imports.slot():
+        content = await _read_upload(file)
+        try:
+            return await run_in_threadpool(store.create, file.filename or "upload", content)
+        except StorageFull as exc:
+            raise HTTPException(status_code=507, detail=f"Could not import file: {exc}")
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Could not import file: {exc}")
 
 
 @router.post("/files", response_model=FileInfo, dependencies=[Depends(require_api_key)])
@@ -243,8 +267,7 @@ async def upload(
     ext = Path(file.filename or "").suffix.lower()
     if ext not in SUPPORTED_EXTENSIONS:
         raise HTTPException(status_code=400, detail=f"Unsupported file type {ext!r}")
-    content = await _read_upload(file)
-    file_id, dataset = await _create(store, file.filename or "upload", content)
+    file_id, dataset = await _create(store, file)
     store.cleanup_expired()
     rows = await run_in_threadpool(dataset.preview, preview_rows)
     return FileInfo.from_meta(file_id, dataset.meta, rows)
@@ -266,10 +289,7 @@ def preview(
     store: UploadStore = Depends(get_store),
 ) -> dict:
     dataset = _load(store, file_id)
-    if offset:
-        data = [dataset._normalize_row(r) for r in dataset.qsv.slice(dataset.csv_path, offset, rows)] if rows else []
-    else:
-        data = dataset.head(rows)
+    data = dataset.page(offset, rows)
     return {
         "columns": dataset.meta.column_names,
         "rows": data,
@@ -279,26 +299,26 @@ def preview(
 
 
 @router.post("/files/{file_id}/generate", dependencies=[Depends(require_api_key)])
-def generate(
+async def generate(
     file_id: str,
     req: GenerateRequest,
     format: OutputFormat = Query("ddicdi", description="ddicdi (default) or cdif"),
     store: UploadStore = Depends(get_store),
 ) -> Response:
-    return _generate(store, file_id, req, format)
+    return await _generate(store, file_id, req, format)
 
 
 @router.post("/files/{file_id}/output", dependencies=[Depends(require_api_key)])
-def output(
+async def output(
     file_id: str,
     req: OutputRequest,
     format: OutputFormat = Query("ddicdi", description="ddicdi (default) or cdif"),
     store: UploadStore = Depends(get_store),
 ) -> Response:
     """Editor preview: the current document with the stored roles, not as a download."""
-    dataset = _load(store, file_id)
+    dataset = await run_in_threadpool(_load, store, file_id)
     editing.ensure_roles(dataset.meta)
-    content = _cdif(dataset, req) if format == "cdif" else _jsonld(dataset, req)
+    content = await _render_admitted(dataset, req, format)
     return Response(content=content, media_type="application/ld+json")
 
 
@@ -488,10 +508,19 @@ async def enrich_variables(file_id: str, body: EnrichIn, store: UploadStore = De
         variables = [v for v in variables if v.name in wanted]
     if not body.kinds:
         raise HTTPException(status_code=400, detail="kinds must not be empty")
+    limit = settings.max_enrich_variables
+    if limit > 0 and len(variables) > limit:
+        raise HTTPException(
+            status_code=413,
+            detail=f"{len(variables)} variables in one enrich request; the limit is {limit}. Send them in parts.",
+        )
     try:
-        result = await enrich.enrich(variables, body.kinds)
+        async with admission.enrichments.slot():
+            result = await enrich.enrich(variables, body.kinds)
     except enrich.NotConfigured as exc:
         raise HTTPException(status_code=503, detail=str(exc))
+    except enrich.EnrichError as exc:
+        raise HTTPException(status_code=504, detail=str(exc))
     if result.errors and not result.suggestions:
         raise HTTPException(status_code=502, detail=f"n8n enrichment failed: {result.errors[0]['message']}")
     return EnrichOut(
@@ -526,8 +555,7 @@ async def convert_once(
     ext = Path(file.filename or "").suffix.lower()
     if ext not in SUPPORTED_EXTENSIONS:
         raise HTTPException(status_code=400, detail=f"Unsupported file type {ext!r}")
-    content = await _read_upload(file)
-    file_id, _ = await _create(store, file.filename or "upload", content)
+    file_id, _ = await _create(store, file)
     try:
         try:
             req = GenerateRequest(
@@ -544,6 +572,6 @@ async def convert_once(
             )
         except ValidationError as exc:
             raise HTTPException(status_code=400, detail=str(exc.errors()[0]["msg"]))
-        return await run_in_threadpool(_bounded, _generate, store, file_id, req, output_format)
+        return await _generate(store, file_id, req, output_format)
     finally:
         store.delete(file_id)

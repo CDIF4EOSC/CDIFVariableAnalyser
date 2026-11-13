@@ -195,7 +195,7 @@ def check_cell(value: str | None) -> None:
         raise EditError(f"Cell value is longer than {settings.max_cell_chars} characters")
 
 
-def _work_dir_usage(work_root: Path) -> int:
+def work_dir_usage(work_root: Path) -> int:
     """Bytes in the upload directories under ``work_root`` (two levels deep)."""
     total = 0
     try:
@@ -217,12 +217,16 @@ def _work_dir_usage(work_root: Path) -> int:
 
 def _size_limit(dataset: Dataset) -> int:
     """The largest ``data.csv`` an edit may write: the per-file cap, lowered to what the
-    work-dir cap still allows (the current file is replaced, so its size counts as free)."""
+    work-dir cap still allows (the current file is replaced, so its size counts as free).
+
+    The work-dir cap only ever refuses growth: however full the work directory is (other
+    users' uploads count too), an upload can always be rewritten at its current size, so
+    cell edits, renames and deletions keep working (security #10)."""
     limit = settings.edit_max_csv_bytes
     if settings.work_dir_max_bytes > 0:
         current = dataset.csv_path.stat().st_size if dataset.csv_path.exists() else 0
-        used = _work_dir_usage(dataset.csv_path.parent.parent)
-        limit = min(limit, settings.work_dir_max_bytes - used + current)
+        used = work_dir_usage(dataset.csv_path.parent.parent)
+        limit = min(limit, max(settings.work_dir_max_bytes - used + current, current))
     return limit
 
 
@@ -286,6 +290,8 @@ def add_variable(dataset: Dataset, spec: NewVariable) -> Variable:
         raise EditError(f"Invalid variable name {name!r}")
     if name in meta.column_names:
         raise EditError(f"Variable {name!r} already exists")
+    if settings.max_variables > 0 and len(meta.variables) >= settings.max_variables:
+        raise EditError(f"The dataset already has the maximum of {settings.max_variables} variables")
     numeric = spec.storage_type.strip().lower() in _NUMERIC_TYPES
     var = Variable(
         name=name,

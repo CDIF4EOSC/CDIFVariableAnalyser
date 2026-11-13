@@ -14,6 +14,7 @@ import json
 import os
 import signal
 import subprocess
+import threading
 from pathlib import Path
 
 from .config import settings
@@ -188,13 +189,71 @@ class Qsv:
             for d in (json.loads(line) for line in out.splitlines() if line.strip())
         ]
 
-    def slice(self, csv_path: str | os.PathLike[str], start: int = 0, length: int = 5) -> list[list[str]]:
-        """Return ``length`` records starting at 0-based ``start`` (header excluded)."""
+    def slice(
+        self, csv_path: str | os.PathLike[str], start: int = 0, length: int = 5, *, max_bytes: int = 0
+    ) -> list[list[str]]:
+        """Return ``length`` records starting at 0-based ``start`` (header excluded).
+
+        With ``max_bytes`` at most that much of qsv's output is read; qsv is then stopped
+        and the record cut off at the limit is dropped, so fewer records come back.
+        """
         if length <= 0:
             return []
-        out = self.run("slice", "--start", str(start), "--len", str(length), str(csv_path))
-        rows = list(csv.reader(io.StringIO(out.decode("utf-8"))))
+        args = ("slice", "--start", str(start), "--len", str(length), str(csv_path))
+        truncated = False
+        if max_bytes > 0:
+            out, truncated = self._run_capped(args, max_bytes)
+        else:
+            out = self.run(*args)
+        rows = list(csv.reader(io.StringIO(out.decode("utf-8", "replace"))))
+        if truncated:
+            rows = rows[:-1]
         return rows[1:]  # drop header
+
+    def _run_capped(self, args: tuple[str, ...], max_bytes: int) -> tuple[bytes, bool]:
+        """Run qsv reading at most ``max_bytes`` of stdout; ``(output, truncated)``.
+
+        Unlike :meth:`run`, stdout is read incrementally and the child is killed once the
+        limit is passed, so a wide or long-celled slice never lands in memory whole.
+        """
+        env = dict(os.environ, QSV_PROGRESSBAR="0", QSV_NO_UPDATE="1")
+        timeout = settings.qsv_timeout or None
+        proc = subprocess.Popen(
+            [self.binary, *args],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            env=env,
+            preexec_fn=_child_limits(settings.import_max_bytes, settings.qsv_max_memory_bytes),
+        )
+        timer = threading.Timer(timeout, proc.kill) if timeout else None
+        if timer:
+            timer.start()
+        try:
+            assert proc.stdout is not None
+            chunks: list[bytes] = []
+            size = 0
+            while size <= max_bytes:
+                chunk = proc.stdout.read(min(1 << 16, max_bytes + 1 - size))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                size += len(chunk)
+            truncated = size > max_bytes
+            if truncated:
+                proc.kill()
+            proc.stdout.close()
+            returncode = proc.wait()
+        finally:
+            if timer:
+                timer.cancel()
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+        if not truncated and returncode != 0:
+            if timer and returncode == -signal.SIGKILL:
+                raise QsvError(f"qsv {' '.join(args)} timed out after {timeout}s")
+            raise QsvError(f"qsv {' '.join(args)} failed ({returncode})")
+        return b"".join(chunks)[:max_bytes], truncated
 
     # -- statistics -----------------------------------------------------------------
 
