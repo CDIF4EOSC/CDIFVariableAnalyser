@@ -11,9 +11,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .. import limits
 from ..models import DatasetMeta
 from ..qsv import Qsv, QsvError
-from .csv_reader import variables_from_profiles
+from .csv_reader import apply_clean_names, variables_from_profiles
 
 
 def import_parquet(path: Path, out_csv: Path, qsv: Qsv, datafile: str | None = None) -> DatasetMeta:
@@ -25,11 +26,14 @@ def import_parquet(path: Path, out_csv: Path, qsv: Qsv, datafile: str | None = N
         raise
 
     fields = qsv.headers(out_csv)
+    limits.check_count(len(fields))  # before any per-column work (GitLab #11)
     profiles = qsv.column_profiles(out_csv)
     types = [p["type"] for p in profiles] if len(profiles) == len(fields) else ["Text"] * len(fields)
+    variables = variables_from_profiles(fields, types, profiles)
+    apply_clean_names(out_csv, variables, qsv)  # names as for a CSV (GitLab #12)
 
     return DatasetMeta(
-        variables=variables_from_profiles(fields, types, profiles),
+        variables=variables,
         number_rows=qsv.count(out_csv),
         datafile=datafile or path.name,
         file_format="parquet",

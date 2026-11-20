@@ -108,6 +108,9 @@ export interface FileInfo {
   info: DatasetInfo;
   file_size: number | null;
   file_md5: string | null;
+  /** Set for a metadata-only session opened from a document saved in QLever. */
+  opened_from?: string | null;
+  source_rows?: number | null;
 }
 
 export interface PreviewPage {
@@ -236,6 +239,8 @@ export interface Statistics {
   /** True when --everything was skipped because the file is large. */
   degraded: boolean;
   elapsed_ms: number;
+  /** The statistics of a saved document (a session opened from QLever, no data). */
+  saved?: boolean;
   variables: VariableStats[];
 }
 
@@ -344,3 +349,40 @@ export function trimStat(value: string, decimals = 4): string {
   const rounded = Number(n.toFixed(decimals));
   return String(rounded);
 }
+
+// -- QLever store ----------------------------------------------------------------------
+
+export interface ShaclResult {
+  /** Required fields of the Dataset tab that are empty (title, licence, date modified). */
+  missing_required: string[];
+  checked: boolean;
+  reason: string | null;
+  shapes: string | null;
+  violations: string[];
+  violation_count: number;
+  warnings: number;
+  warning_messages: string[];
+}
+
+export interface QleverSaveResult {
+  uuid: string;
+  graph: string;
+  dataset_iri: string;
+  triples: number;
+  saved_at: string;
+  info: DatasetInfo;
+  shacl: ShaclResult;
+}
+
+export interface QleverDocument {
+  uuid: string;
+  graph: string;
+  title: string;
+  dataset_iri: string | null;
+  source_file: string | null;
+  saved_at: string | null;
+  saved_by: string | null;
+  triples: number | null;
+}
+
+export type QleverFormat = "jsonld" | "turtle";

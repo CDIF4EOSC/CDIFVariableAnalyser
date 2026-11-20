@@ -1,3 +1,4 @@
+import pytest
 from pathlib import Path
 
 from ddicdi.importers import import_file
@@ -103,3 +104,38 @@ def test_parse_format():
     assert parse_format("$20.") == (20, None)
     assert parse_format("%tdCCYY") == (None, None)
     assert parse_format("") == (None, None)
+
+
+# -- header names -------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("header,name", [
+    ("age", "age"),
+    ("my var", "my_var"),
+    ("a#b", "a#b"),
+    ("Høyde (cm)", "Hoyde_cm"),
+    ("æøå", "aeoa"),
+    ("2020", "v2020"),
+    ("--", "v3"),
+    ("x" * 80, "x" * 64),
+])
+def test_clean_name(header, name):
+    from ddicdi.importers.csv_reader import clean_names
+
+    assert clean_names(["first", "second", header])[2] == name
+
+
+def test_clean_names_stay_unique():
+    from ddicdi.importers.csv_reader import clean_names
+
+    assert clean_names(["a b", "a_b", "a-b"]) == ["a_b", "a_b_2", "a_b_3"]
+
+
+def test_odd_headers_become_names_and_labels(qsv, tmp_path):
+    src = tmp_path / "odd.csv"
+    src.write_text('my var,a#b,Høyde (cm),2020\n1,2,3,4\n5,6,7,8\n', encoding="utf-8")
+    ds = import_file(src, tmp_path / "work", qsv)
+    assert [v.name for v in ds.meta.variables] == ["my_var", "a#b", "Hoyde_cm", "v2020"]
+    assert [v.label for v in ds.meta.variables] == ["my var", "a#b", "Høyde (cm)", "2020"]
+    assert qsv.headers(ds.csv_path) == ["my_var", "a#b", "Hoyde_cm", "v2020"]
+    assert ds.head(1) == [["1", "2", "3", "4"]]

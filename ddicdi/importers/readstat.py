@@ -14,6 +14,7 @@ import math
 import re
 from pathlib import Path
 
+from .. import limits
 from ..models import DatasetMeta, MissingRange, Variable
 from ..qsv import SENTINEL_EXTENSIONS, Qsv
 
@@ -124,6 +125,10 @@ def _sas_variable(v: dict) -> Variable:
 
 
 def metadata_from_readstat(meta_json: dict, datafile: str, file_format: str) -> DatasetMeta:
+    # The count is checked before a Variable is built; the rest of the limits after
+    # (GitLab #11, #12). qsv's metadata output itself is bounded in Qsv.run.
+    raw = meta_json.get("columns", meta_json.get("variables", [])) if file_format == "sas" else meta_json.get("variables", [])
+    limits.check_count(len(raw or []))
     if file_format == "spss":
         variables = [_spss_variable(v) for v in meta_json.get("variables", [])]
     elif file_format == "stata":
@@ -131,6 +136,8 @@ def metadata_from_readstat(meta_json: dict, datafile: str, file_format: str) -> 
     else:
         variables = [_sas_variable(v) for v in meta_json.get("columns", meta_json.get("variables", []))]
 
+    for var in variables:
+        limits.check_variable(var)
     return DatasetMeta(
         variables=variables,
         number_rows=int(meta_json.get("row_count") or 0),

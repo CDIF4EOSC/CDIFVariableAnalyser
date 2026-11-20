@@ -115,7 +115,15 @@ imports = Budget(
 # (measured at ~15.7 KB per variable against ~5.2 KB per cell). The total of all
 # builds in flight stays within ``max_output_cells``, which is sized so the worst case
 # fits the instance; ``max_concurrent_builds`` also caps how many run at once.
+# A labelled code (Code, CodePosition, Category, Notation) costs ``CODE_COST``, and the
+# data a build may read one unit per ``DATA_BYTES_PER_UNIT`` bytes (GitLab #12): a
+# cell's text is held about four times over (row, element, JSON text, response).
+# Turning a CDIF document into an RDF graph and validating it (Check, Save to QLever)
+# takes several times the memory of the JSON: ``RDF_FACTOR`` (GitLab #10).
 VARIABLE_COST = 4
+CODE_COST = 1
+DATA_BYTES_PER_UNIT = 1024
+RDF_FACTOR = 4
 
 builds = Budget(
     "document builds",
@@ -128,3 +136,52 @@ enrichments = Budget(
     "AI enrichment requests",
     capacity=lambda: max(1, settings.max_concurrent_enrich),
 )
+
+# Statistics, categories and edits that rewrite data.csv (GitLab #13): their work
+# grows with the upload, so only a few run at once, as for imports.
+heavy = Budget(
+    "statistics and edits",
+    capacity=lambda: max(1, settings.max_concurrent_heavy),
+)
+
+# SHACL validations (Check, Save to QLever; GitLab #10). Each runs in a child process.
+validations = Budget(
+    "CDIF checks",
+    capacity=lambda: max(1, settings.max_concurrent_validations),
+)
+
+
+# Reading a saved document back from QLever (download, Open; GitLab #18).
+qlever_reads = Budget(
+    "documents being read from QLever",
+    capacity=lambda: max(1, settings.max_concurrent_qlever_reads),
+)
+
+
+class UploadLocks:
+    """One exclusive slot per upload (GitLab #14): edits of an upload are
+    read-modify-write cycles over meta.json and data.csv, so they take turns. Waiting
+    is bounded like any other admission (a 503 beyond it) and holds no worker thread."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._held: dict[str, tuple[Budget, int]] = {}
+
+    @asynccontextmanager
+    async def hold(self, file_id: str) -> AsyncIterator[None]:
+        with self._lock:
+            budget, refs = self._held.get(file_id) or (Budget("changes to this upload", capacity=lambda: 1), 0)
+            self._held[file_id] = (budget, refs + 1)
+        try:
+            async with budget.slot():
+                yield
+        finally:
+            with self._lock:
+                budget, refs = self._held[file_id]
+                if refs <= 1:
+                    del self._held[file_id]
+                else:
+                    self._held[file_id] = (budget, refs - 1)
+
+
+uploads = UploadLocks()

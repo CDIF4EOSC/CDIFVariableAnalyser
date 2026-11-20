@@ -60,6 +60,24 @@ class Settings(BaseSettings):
     max_variables: int = 20_000
     max_qualifies_refs: int = 1_000_000
 
+    # Bounds on what one variable may carry (GitLab #8, #12). Every path that makes or
+    # changes a variable checks them: import, the edit API, Open from QLever. A name is
+    # at most 64 characters (SPSS's limit). A value-label code becomes part of four to
+    # six element ids, so it is at most ``max_code_chars``; a variable has at most
+    # ``max_value_labels`` labelled codes and ``max_missing_ranges`` missing ranges, and a
+    # variable or value label is at most ``max_label_chars``. qsv output read for
+    # metadata (sniff, headers, stats, readstat metadata) is at most
+    # ``qsv_max_output_bytes``; a file whose metadata is larger is refused.
+    max_name_chars: int = 64
+    max_code_chars: int = 1000
+    max_value_labels: int = 10_000
+    max_missing_ranges: int = 100
+    max_label_chars: int = 4000
+    qsv_max_output_bytes: int = 32 * 1024**2
+    # A print format (``F8.2``, ``%9.0g``) or storage type (``double``) is at most this
+    # long (GitLab #19).
+    max_format_chars: int = 64
+
     # Statistics (qsv stats / qsv frequency). ``stats_everything_max_bytes`` is the
     # cut-off above which ``--everything`` is skipped: it loads and sorts every
     # numeric column in memory, so median, quartiles, mode and cardinality are
@@ -67,6 +85,11 @@ class Settings(BaseSettings):
     stats_timeout: float = 120.0
     stats_everything_max_bytes: int = 256 * 1024 * 1024
     stats_category_limit: int = 25
+    # Statistics and edits whose work grows with the upload (GitLab #13) run under
+    # admission control like imports: at most ``max_concurrent_heavy`` at once, the rest
+    # queue (``max_queued_requests``, ``queue_timeout``) or get a 503. Requests on one
+    # upload that change it, or read what an edit is rewriting, take turns.
+    max_concurrent_heavy: int = 4
 
     # Editing limits. ``max_cell_chars`` caps one cell (32767 is SPSS's longest string).
     # ``edit_max_csv_bytes`` caps a rewritten data.csv; ``work_dir_max_bytes`` caps all
@@ -109,6 +132,38 @@ class Settings(BaseSettings):
     max_preview_cells: int = 50_000
     max_preview_bytes: int = 4 * 1024**2
     max_concurrent_builds: int = 4
+    # Bytes of CSV data one document build may read (GitLab #12): rows are counted as
+    # cells, so long cells are charged by their bytes as well. 0 = off.
+    max_output_data_bytes: int = 64 * 1024**2
+
+    # Every element of a generated document is named ``urn:uuid:<uuid>`` (cdi/ids.py).
+    # ``readable_ids`` keeps the symbolic ``#instanceVariable-age`` ids instead, for
+    # teaching examples and debugging. A save to QLever always uses UUIDs.
+    readable_ids: bool = False
+
+    # QLever store for "Save to QLever" / "Import from QLever" (QLever-deployment repo).
+    # Empty URL = feature off. The token is QLever's ACCESS_TOKEN: it guards writes only;
+    # reads are open to whoever reaches the port, so keep QLever on a private network.
+    # ``cdif_shacl_shapes``: CDIF SHACL shapes to check a save against (warnings only);
+    # default the vendored ddicdi/cdif/shapes/CDIF-Complete-Shapes.ttl.
+    qlever_url: str = ""
+    qlever_access_token: str = ""
+    qlever_timeout: float = 60.0
+    cdif_shacl_shapes: Path | None = None
+    # SHACL validation of a CDIF document (Check, Save to QLever; GitLab #10) runs in a
+    # child process, at most ``max_concurrent_validations`` at once, stopped after
+    # ``shacl_timeout`` seconds; a graph of more than ``shacl_max_triples`` triples is
+    # reported as not checked.
+    max_concurrent_validations: int = 1
+    # Reading a saved document back (download, Open in the editor; GitLab #18): at most
+    # ``qlever_max_document_bytes`` of N-Triples from QLever, parsed off the event loop,
+    # ``max_concurrent_qlever_reads`` at once. A workspace opened from a document has a
+    # meta.json of at most ``max_meta_bytes`` (GitLab #20).
+    qlever_max_document_bytes: int = 64 * 1024**2
+    max_concurrent_qlever_reads: int = 2
+    max_meta_bytes: int = 64 * 1024**2
+    shacl_timeout: float = 120.0
+    shacl_max_triples: int = 500_000
 
 
 settings = Settings()

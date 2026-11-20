@@ -102,6 +102,45 @@ DDI_API_KEY= uv run pytest -q  # blank the key if your .env sets one
 
 The tests read sample files from `test-files/` (ESS11-subset.sav, CRON3w5e01_1.csv and .dta). They are survey microdata and not part of the repository; ask the maintainer for them.
 
+## Identifiers
+
+Every element of a generated document, DDI-CDI or CDIF, is named `urn:uuid:<uuid>`, nested ones (names, labels, statistic values, creators) included. Two UUIDs are stored in the workspace: the document's, minted at import (the default record IRI is `urn:uuid:<it>`), and each variable's, kept when the variable is renamed. Every other UUID is derived from them (UUID v5), so the same element has the same IRI on every save and in both formats, and two uploads of one file never share one. The readable ids (`#instanceVariable-age`) are still what the generator works with; set `DDI_READABLE_IDS=true` to get them in the output instead, for teaching examples or debugging (a save to QLever always uses UUIDs). `ddicdi/cdi/ids.py` has the details.
+
+CSV headers that are not valid variable names (`my var`, `Høyde (cm)`, `2020`) become clean ones at import (`my_var`, `Hoyde_cm`, `v2020`); the header is kept as the label.
+
+## QLever store (Save to / Import from QLever)
+
+With `DDI_QLEVER_URL` and `DDI_QLEVER_ACCESS_TOKEN` set, the header gets a **QLever: Check | Save | Import** group. Save writes the document's CDIF to its own named graph `urn:uuid:<uuid>` (replaced on every re-save) and an entry in the catalog graph `urn:cdi-studio:catalog`; Import lists the saved documents; **Open** brings one back into the editor as a metadata-only session (no data rows; the output keeps the source's record count, and the statistics the document was saved with stand in for computed ones until the session has rows, in the output and on the Statistics tab, see `ddicdi/saved_statistics.py`), and View / download read it back as JSON-LD or Turtle. The session keeps the document's UUID, so its next save replaces the same graph. CDIF is a lossy projection of DDI-CDI: missing-value ranges come back as single labelled codes, concept labels do not come back, statistics come back rounded at about the 12th significant digit, and keywords, places and contributors come back sorted; `ddicdi/cdif/reverse.py` lists it all and `tests/test_open_from_qlever.py` pins it down. The graph is the document's UUID; a workspace from before UUIDs gets its old `urn:ddi-cdi:<file>` record IRI replaced on the first save, and a record IRI you typed yourself is kept. **Check** validates the CDIF against the CDIF SHACL shapes without saving (`POST /api/files/{id}/cdif/check`, no QLever needed), and every save runs the same check. It also lists the required fields of the Dataset tab that are empty (title, licence, date modified): the converter writes a stand-in for them, which SHACL accepts. Problems are shown but do not stop a save. The shapes (`CDIF-Complete-Shapes.ttl`, Apache-2.0) are vendored in `ddicdi/cdif/shapes/`, so the Docker image has them; `DDI_CDIF_SHACL_SHAPES` points at another file. The deployment and the design are in the QLever-deployment repository.
+
+For development, run QLever locally with the deployment's Qleverfile (needs the `qlever` CLI ≥ 0.6, `pipx install qlever`):
+
+```bash
+mkdir ~/dev/qlever-cdif-local && cd ~/dev/qlever-cdif-local
+cp ../QLever-deployment/vm/seed.nq .
+sed -e 's|__ACCESS_TOKEN__|local-dev-token|' -e 's|__PORT__|7011|' \
+    -e "s|__IMAGE__|$(sed -n 's/.*QLEVER_IMAGE:=\([^}]*\)}.*/\1/p' ../QLever-deployment/config.env)|" \
+    ../QLever-deployment/vm/Qleverfile.template > Qleverfile
+qlever index && qlever start
+
+# in this repo
+DDI_QLEVER_URL=http://localhost:7011 DDI_QLEVER_ACCESS_TOKEN=local-dev-token uv run uvicorn ddicdi.api.main:app --port 8011
+# round-trip tests against it (they skip without these variables)
+DDI_TEST_QLEVER_URL=http://localhost:7011 DDI_TEST_QLEVER_ACCESS_TOKEN=local-dev-token uv run pytest tests/test_qlever.py
+```
+
+The Docker image reaches it as `DDI_QLEVER_URL=http://host.docker.internal:7011`; inside a container, `localhost` is the container itself.
+
+To empty the local store again: the index holds only the catalog seed, and every save is an update kept in `cdif.update-triples` and replayed at start, so delete that file while QLever is stopped:
+
+```bash
+cd ~/dev/qlever-cdif-local
+qlever stop
+rm cdif.update-triples
+qlever start
+```
+
+This does not work once `qlever rebuild-index` has folded the saves into the index; then rebuild from the seed with `qlever index`. On the shared Azure instance, "Reset Updates" in the QLever UI has the same effect for everyone: it removes every saved document.
+
 ## Further reading
 
 - `ddicdi/config.py`: all settings and their defaults.

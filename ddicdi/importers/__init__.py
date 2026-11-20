@@ -59,7 +59,7 @@ def suggested_info(meta: DatasetMeta) -> DatasetInfo:
     today = date.today().isoformat()
     return DatasetInfo(
         title=(meta.file_label or "").strip() or stem,
-        record_id=f"urn:ddi-cdi:{stem}",
+        record_id=f"urn:uuid:{meta.doc_uuid}",
         version="1.0",
         language="en",
         date_published=today,

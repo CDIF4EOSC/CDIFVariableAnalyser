@@ -71,10 +71,3 @@ export function countByType(views: ElementView[]): Map<string, number> {
   return m;
 }
 
-/** Ids of elements that mention a variable name in their @id. */
-export function idsForVariable(views: ElementView[], name: string): Set<string> {
-  const out = new Set<string>();
-  const needle = `-${name}`;
-  for (const v of views) if (!v.key && (v.id.endsWith(needle) || v.id.includes(`${needle}-`) || v.id === `#${name}`)) out.add(v.id);
-  return out;
-}

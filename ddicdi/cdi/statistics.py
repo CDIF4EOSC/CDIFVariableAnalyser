@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from typing import Any
 from ..data import Dataset
 from ..models import DatasetMeta, Variable
+from ..config import settings
 from .codes import category, category_id, notation, notation_id, part
 from ..stats import (
     FREQUENCY_MAX_CARDINALITY,
@@ -74,7 +75,17 @@ def collect(dataset: Dataset, *, weight: str | None = None, with_categories: boo
     ``weight`` is a variable name or ``"auto"``; see :func:`ddicdi.stats.resolve_weight`.
     ``with_categories=False`` skips the frequency pass, for a selection that asked for
     no per-category statistic.
+
+    A metadata-only session opened from QLever has no data: its saved statistics stand
+    in (``saved_statistics.py``), whatever weight is asked for.
     """
+    from ..saved_statistics import load
+
+    saved = load(dataset.meta)
+    if saved is not None:
+        if not with_categories:
+            saved.categories = []
+        return saved
     summary = summary_stats(dataset, weight=weight)
     categories: list[CategoryStats] = []
     if with_categories:
@@ -82,6 +93,10 @@ def collect(dataset: Dataset, *, weight: str | None = None, with_categories: boo
         categories = category_stats_many(
             dataset, names, limit=FREQUENCY_MAX_CARDINALITY, weight=summary.weight, sort="code"
         )
+        # A value becomes part of several element ids: one longer than a value-label
+        # code may be gets no category statistics (GitLab #8).
+        for cats in categories:
+            cats.categories = [c for c in cats.categories if len(c.code) <= settings.max_code_chars]
     return StatisticsData(summary=summary, categories=categories, weighted=bool(summary.weight), weight=summary.weight)
 
 

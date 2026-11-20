@@ -7,6 +7,9 @@ from ddicdi.api.main import create_app
 from ddicdi.api.store import UploadStore
 from tests.conftest import ESS11_SAV
 
+# The API tests here find elements by their readable ids.
+pytestmark = pytest.mark.usefixtures("readable_ids")
+
 
 @pytest.fixture()
 def client(tmp_path, qsv):

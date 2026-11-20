@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 import re
+import uuid
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Iterator
 
@@ -43,6 +44,10 @@ def parse_format(fmt: str) -> tuple[int | None, int | None]:
         return None, None
     decimals = int(m.group(3)) if m.group(3) else None
     return int(m.group(2)), decimals
+
+
+def new_uuid() -> str:
+    return str(uuid.uuid4())
 
 
 @dataclass
@@ -94,6 +99,9 @@ class Variable:
     unit_of_measure: str | None = None  # EU Publications Office measurement-unit URI
     concepts: list[Concept] = field(default_factory=list)
     functions: list[str] = field(default_factory=list)  # e.g. Weight, UnitIdentifier; see functions.py
+    # Stable identity, minted when the variable is created and kept through renames; the
+    # ids of everything made for the variable derive from it (see cdi/ids.py).
+    uid: str = field(default_factory=new_uuid)
 
     @property
     def has_missing(self) -> bool:
@@ -212,8 +220,25 @@ class DatasetMeta:
     # The uploaded file as it arrived, for the CDIF distribution.
     file_size: int | None = None
     file_md5: str | None = None
+    # The document's UUID, minted at import. Every element IRI derives from it (see
+    # cdi/ids.py); it is also the QLever graph urn:uuid:<doc_uuid>, which a re-save replaces.
+    doc_uuid: str = field(default_factory=new_uuid)
+    # A metadata-only session opened from a saved document (QLever graph IRI): it has no
+    # data, and ``source_rows`` keeps the source's record count for the output.
+    opened_from: str | None = None
+    source_rows: int | None = None
+    # The statistics the saved document carried, by variable UUID (saved_statistics.py).
+    saved_statistics: dict[str, Any] | None = None
 
     # -- convenience ------------------------------------------------------------
+
+    @property
+    def record_count(self) -> int:
+        """The record count the output declares: the source's, while a metadata-only
+        session has no rows of its own."""
+        if self.number_rows == 0 and self.source_rows is not None:
+            return self.source_rows
+        return self.number_rows
 
     @property
     def column_names(self) -> list[str]:
@@ -273,6 +298,11 @@ class DatasetMeta:
             info=DatasetInfo.from_dict(d.get("info", {})),
             file_size=d.get("file_size"),
             file_md5=d.get("file_md5"),
+            # store_id: the name before every document had a UUID from import
+            doc_uuid=d.get("doc_uuid") or d.get("store_id") or new_uuid(),
+            opened_from=d.get("opened_from"),
+            source_rows=d.get("source_rows"),
+            saved_statistics=d.get("saved_statistics"),
         )
 
 

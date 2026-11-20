@@ -8,12 +8,14 @@ import { DataTable } from "./components/DataTable";
 import { DatasetPanel, checklist } from "./components/DatasetPanel";
 import { IconCode, IconDownload, IconFile, IconLogo, IconRedo, IconSettings, IconUndo } from "./components/Icons";
 import { JsonPreview } from "./components/JsonPreview";
+import { CdifCheckModal } from "./components/CdifCheckModal";
+import { QleverModal } from "./components/QleverModal";
 import { MetadataTable } from "./components/MetadataTable";
 import { OptionsPopover } from "./components/OptionsPopover";
 import { StatisticsPanel } from "./components/StatisticsPanel";
 import { Toasts, type Toast } from "./components/Toasts";
 import { UploadScreen } from "./components/UploadScreen";
-import type { Concept, DatasetInfo, Vocabularies, EnrichKind, EnrichResponse, FileInfo, JsonLdDoc, Options, OutputFormat, PreviewPage, Statistics, Suggestion } from "./types";
+import type { Concept, DatasetInfo, Vocabularies, EnrichKind, EnrichResponse, FileInfo, JsonLdDoc, Options, OutputFormat, PreviewPage, QleverDocument, QleverSaveResult, ShaclResult, Statistics, Suggestion } from "./types";
 import { ALL_STAT_NAMES, ENRICH_KINDS, sameFunctions } from "./types";
 
 interface Edit {
@@ -57,6 +59,7 @@ export default function App() {
   const [options, setOptions] = useState<Options>(DEFAULT_OPTIONS);
   const [doc, setDoc] = useState<JsonLdDoc | null>(null);
   const [views, setViews] = useState<ElementView[]>([]);
+  const [variableIds, setVariableIds] = useState<Record<string, string[]>>({});
   const [outStatus, setOutStatus] = useState<"idle" | "busy" | "error">("idle");
   const [outError, setOutError] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState<number | null>(null);
@@ -83,6 +86,12 @@ export default function App() {
   const [uploadBusy, setUploadBusy] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState<OutputFormat | null>(null);
+  // QLever store: the modal (list / read back) and the result of the last save.
+  const [qleverOpen, setQleverOpen] = useState(false);
+  const [qleverSaved, setQleverSaved] = useState<QleverSaveResult | null>(null);
+  const [savingQlever, setSavingQlever] = useState(false);
+  // CDIF SHACL check before a save: open while not undefined; null while it runs.
+  const [cdifCheck, setCdifCheck] = useState<ShaclResult | null | undefined>(undefined);
   const [toasts, setToasts] = useState<Toast[]>([]);
 
   const docRef = useRef<JsonLdDoc | null>(null);
@@ -103,6 +112,7 @@ export default function App() {
     regenSeq.current++;
     setDoc(null);
     setViews([]);
+    setVariableIds({});
     setOutStatus("idle");
     setOutError(null);
     setElapsed(null);
@@ -175,8 +185,9 @@ export default function App() {
           statistics_weight: statsWeight,
           statistics_include: options.includeStatistics ? options.statistics : undefined,
         };
-        const next = await api.output(fileId, body, outFormat);
+        const { document: next, variable_ids } = await api.output(fileId, body, outFormat);
         if (seq !== regenSeq.current) return;
+        setVariableIds(variable_ids);
         setViews(diffDocs(docRef.current, next));
         docRef.current = next;
         setDoc(next);
@@ -281,6 +292,23 @@ export default function App() {
       setUploadError(e instanceof Error ? e.message : String(e));
     } finally {
       setUploadBusy(false);
+    }
+  };
+
+  /** Open a document saved in QLever as a metadata-only session, in place of the open file. */
+  const openFromQlever = async (doc: QleverDocument) => {
+    if (info && !confirm(`Open "${doc.title || doc.uuid}" from QLever? The file you have open now (${info.filename}) is closed; edits not saved to QLever are lost.`)) return;
+    try {
+      const i = await api.openQlever(doc.uuid);
+      if (info) api.remove(info.file_id).catch(() => undefined);
+      resetFileState();
+      setUploadError(null);
+      setInfo(i);
+      setQleverOpen(false);
+      setQleverSaved(null);
+      toast(`Opened ${doc.title || doc.uuid} from QLever (metadata only)`);
+    } catch (e) {
+      fail(e);
     }
   };
 
@@ -685,6 +713,45 @@ export default function App() {
     }
   };
 
+  /** Save the CDIF (with the statistics options of the preview) to QLever. The first
+   *  save mints the document's UUID and may set its record IRI, so the description is
+   *  taken back from the response. SHACL problems open the result; they do not block. */
+  const cdifBody = () => ({
+    max_rows: 0,
+    process_all_rows: false,
+    include_statistics: options.includeStatistics,
+    statistics_weight: statsWeight,
+    statistics_include: options.includeStatistics ? options.statistics : undefined,
+  });
+
+  const checkCdif = async () => {
+    if (!info) return;
+    setCdifCheck(null);
+    try {
+      setCdifCheck(await api.checkCdif(info.file_id, cdifBody()));
+    } catch (e) {
+      setCdifCheck(undefined);
+      fail(e);
+    }
+  };
+
+  const saveToQlever = async () => {
+    if (!info) return;
+    setSavingQlever(true);
+    try {
+      const r = await api.saveToQlever(info.file_id, cdifBody());
+      setCdifCheck(undefined);
+      setInfo((i) => (i ? { ...i, info: r.info } : i));
+      setQleverSaved(r);
+      if (!r.shacl.checked || r.shacl.violation_count > 0) setQleverOpen(true);
+      toast(`Saved to QLever · ${r.triples.toLocaleString()} triples${r.shacl.violation_count ? ` · ${r.shacl.violation_count} SHACL violations` : ""}`);
+    } catch (e) {
+      fail(e);
+    } finally {
+      setSavingQlever(false);
+    }
+  };
+
   const focusVariable = (name: string | null) => {
     setFocusVar(name);
     if (name) {
@@ -711,12 +778,14 @@ export default function App() {
           error={uploadError}
           health={health}
           onApiDocs={() => setApiDocs(true)}
+          onQlever={apiInfo?.qlever === true ? () => setQleverOpen(true) : undefined}
           supported={(apiInfo?.supported_extensions as string[] | undefined) ?? []}
           apiKeyRequired={apiInfo?.authentication === "X-API-Key header"}
           apiKey={options.apiKey}
           onApiKey={(k) => { setUploadError(null); setOptions((o) => ({ ...o, apiKey: k.trim() })); }}
         />
         {apiDocs && <ApiDocsModal apiInfo={apiInfo} onClose={() => setApiDocs(false)} />}
+        {qleverOpen && <QleverModal saved={null} onClose={() => setQleverOpen(false)} onToast={toast} onOpen={openFromQlever} />}
         <Toasts items={toasts} />
       </>
     );
@@ -732,8 +801,14 @@ export default function App() {
         <div className="file-chip">
           <IconFile style={{ color: "#a5b4fc" }} />
           <strong>{info.filename}</strong>
-          <span>{info.file_format.toUpperCase()} · {info.number_rows.toLocaleString()} rows · {info.number_variables} variables</span>
-          {importMs !== null && (<><span className="sep" /><span>imported in {(importMs / 1000).toFixed(2)} s</span></>)}
+          {info.opened_from && info.number_rows === 0 ? (
+            <span title={`Opened from QLever (${info.opened_from}). There are no data rows here; the output keeps the source's record count${info.source_rows != null ? ` (${info.source_rows.toLocaleString()} rows)` : ""}.`}>
+              Metadata only · {info.number_variables} variables
+            </span>
+          ) : (
+            <span>{info.file_format.toUpperCase()} · {info.number_rows.toLocaleString()} rows · {info.number_variables} variables</span>
+          )}
+          {importMs !== null && (<><span className="sep wide-only" /><span className="wide-only">imported in {(importMs / 1000).toFixed(2)} s</span></>)}
           <button type="button" className="iconbtn" style={{ color: "#94a3b8", width: 22, height: 22 }} aria-label="Close file" title="Close file and start over" onClick={closeFile}>×</button>
         </div>
         <span className="grow" />
@@ -770,10 +845,24 @@ export default function App() {
             </button>
           ))}
         </div>
-        <button type="button" className="hbtn primary" disabled={downloading !== null} onClick={() => void download()}>
-          <IconDownload /> {downloading ? "Preparing…" : `Download ${baseName}${outFormat === "cdif" ? "_CDIF.json" : "_DDICDI.jsonld"}`}
+        <button type="button" className="hbtn primary" disabled={downloading !== null} title={`Download ${baseName}${outFormat === "cdif" ? "_CDIF.json" : "_DDICDI.jsonld"}`} onClick={() => void download()}>
+          <IconDownload /> {downloading ? "Preparing…" : <>Download<span className="wide-only"> {baseName}{outFormat === "cdif" ? "_CDIF.json" : "_DDICDI.jsonld"}</span></>}
         </button>
-        <button type="button" className="hbtn" title="API documentation" onClick={() => setApiDocs(true)}><IconCode /> API</button>
+        {apiInfo?.qlever === true && (
+          <div className="fmt-switch qlever-group" role="group" aria-label="QLever store">
+            <span className="group-label wide-only">QLever</span>
+            <button type="button" aria-label="Check CDIF" disabled={cdifCheck === null} title="Check the CDIF against the CDIF SHACL shapes before saving to QLever" onClick={() => void checkCdif()}>
+              Check
+            </button>
+            <button type="button" aria-label="Save to QLever" disabled={savingQlever} title="Save to QLever: store this document's CDIF (a re-save replaces it)" onClick={() => void saveToQlever()}>
+              {savingQlever ? "Saving…" : "Save"}
+            </button>
+            <button type="button" aria-label="Import from QLever" title="Import from QLever: view or download saved documents" onClick={() => { setQleverSaved(null); setQleverOpen(true); }}>
+              Import
+            </button>
+          </div>
+        )}
+        <button type="button" className="hbtn" title="API documentation" aria-label="API documentation" onClick={() => setApiDocs(true)}><IconCode /><span className="wide-only"> API</span></button>
       </header>
 
       <div className={`workspace ${outputOpen ? "with-output" : ""}`}>
@@ -861,6 +950,7 @@ export default function App() {
             doc={doc}
             format={outFormat}
             views={views}
+            variableIds={variableIds}
             status={outStatus}
             elapsedMs={elapsed}
             error={outError}
@@ -886,6 +976,8 @@ export default function App() {
 
       {drawer && <AddVariableDrawer variables={info.variables} rowsInOutput={processAll ? info.number_rows : maxRows} onClose={() => setDrawer(false)} onAdd={addVariable} />}
       {apiDocs && <ApiDocsModal apiInfo={apiInfo} onClose={() => setApiDocs(false)} />}
+      {qleverOpen && <QleverModal saved={qleverSaved} onClose={() => setQleverOpen(false)} onToast={toast} onOpen={openFromQlever} />}
+      {cdifCheck !== undefined && <CdifCheckModal result={cdifCheck} saving={savingQlever} onSave={() => void saveToQlever()} onClose={() => setCdifCheck(undefined)} />}
       {resetAsk && (
         <ConfirmDialog
           title="Start from scratch?"

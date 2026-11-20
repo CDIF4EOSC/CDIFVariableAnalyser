@@ -397,7 +397,7 @@ def test_output_with_statistics(client, uploaded):
     assert "Statistics" not in types and {"CodeList", "Code", "Category", "Notation"} <= types
 
 
-def test_download_with_statistics(client, uploaded):
+def test_download_with_statistics(client, uploaded, readable_ids):
     r = client.post(
         f"/api/files/{uploaded}/generate",
         json={"max_rows": 0, "include_statistics": True, "statistics_weight": "dweight"},

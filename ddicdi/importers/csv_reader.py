@@ -13,8 +13,12 @@ column's width and decimals, which are written as an SPSS style print format
 from __future__ import annotations
 
 import csv
+import re
+import unicodedata
 from pathlib import Path
 
+from .. import limits
+from ..config import settings
 from ..models import DatasetMeta, Variable
 from ..qsv import Qsv
 
@@ -43,6 +47,9 @@ def _sample_rows(path: Path, delimiter: str, quote_char: str = '"') -> list[list
     try:
         with path.open(newline="", encoding="utf-8", errors="replace") as fh:
             for row in csv.reader(fh, delimiter=delimiter, quotechar=quote_char or '"'):
+                # A record wider than the column cap is refused before 200 of them are
+                # held in memory (GitLab #11).
+                limits.check_count(len(row))
                 if row:
                     rows.append(row)
                 if len(rows) >= _SAMPLE_ROWS:
@@ -127,15 +134,81 @@ def variables_from_profiles(fields: list[str], types: list[str], profiles: list[
         storage, measure, numeric = _SNIFF_TYPES.get(str(t).lower(), ("string", "nominal", False))
         variables.append(
             Variable(
-                name=name, label=name, format=csv_format(storage, profile),
+                name=name, label=name[: settings.max_label_chars], format=csv_format(storage, profile),
                 storage_type=storage, measure=measure, numeric=numeric,
             )
         )
     return variables
 
 
+# Variable names as the editor allows them (editing._NAME_RE), as in SPSS.
+_NAME_OK = re.compile(r"^[A-Za-z_][A-Za-z0-9_.@#$]*$")
+_NAME_BAD_CHARS = re.compile(r"[^A-Za-z0-9_.@#$]+")
+_SPELLED_OUT = str.maketrans({"æ": "ae", "Æ": "AE", "ø": "o", "Ø": "O", "ß": "ss", "œ": "oe", "Œ": "OE"})
+
+
+def clean_name(header: str, position: int) -> str:
+    """A CSV header as a variable name: accents dropped, any other character not allowed
+    in a name turned into ``_``, a leading digit prefixed with ``v``; ``v<n>`` when
+    nothing is left."""
+    text = unicodedata.normalize("NFKD", header.translate(_SPELLED_OUT))
+    text = "".join(c for c in text if not unicodedata.combining(c))
+    name = _NAME_BAD_CHARS.sub("_", text).strip("_.")
+    if not name:
+        return f"v{position + 1}"
+    if not _NAME_OK.match(name):
+        name = "v" + name
+    return name[: settings.max_name_chars]
+
+
+def clean_names(headers: list[str]) -> list[str]:
+    """``clean_name`` of every header, made unique with ``_2``, ``_3`` ...
+
+    Linear however many headers clean to one name (GitLab #9): the suffix counter of a
+    stem only grows, so no header probes the names taken before it again. A name too
+    long for a suffix is cut to leave room for any suffix up to ``_9999999`` first, so
+    all names that share that stem share one counter.
+    """
+    name_max = settings.max_name_chars
+    out: list[str] = []
+    taken: set[str] = set()
+    next_n: dict[str, int] = {}
+    for i, header in enumerate(headers):
+        base = header if _NAME_OK.match(header) and len(header) <= name_max else clean_name(header, i)
+        if base not in taken:  # the editor's rule: exact names are unique
+            taken.add(base)
+            out.append(base)
+            continue
+        stem = base if len(base) <= name_max - 8 else base[: name_max - 8]
+        n = next_n.get(stem, 1)
+        while True:
+            n += 1
+            name = f"{stem}_{n}"
+            if name not in taken:
+                break
+        next_n[stem] = n
+        taken.add(name)
+        out.append(name)
+    return out
+
+
+def apply_clean_names(out_csv: Path, variables: list[Variable], qsv: Qsv) -> None:
+    """Give headers that are not valid variable names ("my var", "a#b", "2020",
+    "Høyde (cm)") a clean name; the header itself stays as the label. data.csv gets the
+    new header row, since qsv finds the columns by name."""
+    fields = [v.name for v in variables]
+    names = clean_names(fields)
+    if names != fields:
+        renamed = out_csv.with_suffix(".renamed.csv")
+        qsv.rename_columns(out_csv, renamed, names)
+        renamed.replace(out_csv)
+        for var, name in zip(variables, names):
+            var.name = name
+
+
 def import_csv(path: Path, out_csv: Path, qsv: Qsv, datafile: str | None = None) -> DatasetMeta:
-    info = qsv.sniff(path)
+    info = qsv.sniff(path)  # its output is bounded (settings.qsv_max_output_bytes)
+    limits.check_count(len(info.get("fields") or []))
     sniffed_delimiter = info.get("delimiter_char") or ","
     quote_char = info.get("quote_char") or '"'
 
@@ -154,16 +227,19 @@ def import_csv(path: Path, out_csv: Path, qsv: Qsv, datafile: str | None = None)
     # Cache a normalised, comma separated copy so slice/count/stream never need the delimiter.
     qsv.normalize_csv(path, out_csv, delimiter)
 
+    # The column count is known (and checked) before any per-column work: stats
+    # profiles, Variable objects, name cleaning (GitLab #9, #11).
+    fields = info["fields"] if sniff_trusted else qsv.headers(out_csv)
+    limits.check_count(len(fields))
     profiles = qsv.column_profiles(out_csv)
     if sniff_trusted:
-        fields = info["fields"]
         types = info.get("types") or ["Text"] * len(fields)
     else:
-        fields = qsv.headers(out_csv)
         types = [p["type"] for p in profiles]
         if len(types) != len(fields):
             types = ["Text"] * len(fields)
     variables = variables_from_profiles(fields, types, profiles)
+    apply_clean_names(out_csv, variables, qsv)
 
     number_rows = info.get("num_records") if sniff_trusted else None
     if number_rows is None or info.get("estimated"):

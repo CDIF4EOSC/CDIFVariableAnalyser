@@ -118,6 +118,8 @@ export function StatisticsPanel(p: Props) {
   // The one line of context that stops the numbers from being read wrong.
   const note = (() => {
     if (!p.stats) return null;
+    if (p.stats.saved)
+      return "These are the statistics of the saved document: this session has no data, so they cannot be recomputed or weighted differently, and a save writes them back unchanged. QLever returns them rounded at about the 12th significant digit.";
     if (p.stats.degraded)
       return "Large file — median, quartiles, mode and distinct counts were skipped to keep the computation streaming.";
     if (!p.stats.excludes_sentinels)
@@ -135,7 +137,9 @@ export function StatisticsPanel(p: Props) {
       <div className="panel-head">
         <h2>Statistics</h2>
         <span className="sub">
-          {p.stats
+          {p.stats?.saved
+            ? `${p.stats.variables.length} variables · from the saved document`
+            : p.stats
             ? `${p.stats.variables.length} variables · qsv stats · ${p.stats.elapsed_ms} ms`
             : p.status === "busy"
               ? "Computing…"
@@ -154,6 +158,7 @@ export function StatisticsPanel(p: Props) {
             </button>
           ))}
         </div>
+        {!p.stats?.saved && (<>
         <select
           className="cell-select plain"
           aria-label="Weight variable"
@@ -174,6 +179,7 @@ export function StatisticsPanel(p: Props) {
         <button type="button" className="btn" onClick={p.onRecompute} disabled={p.status === "busy"}>
           {p.status === "busy" ? "Computing…" : "Recompute"}
         </button>
+        </>)}
       </div>
 
       {note && <div className="stats-note" role="status">{note}</div>}

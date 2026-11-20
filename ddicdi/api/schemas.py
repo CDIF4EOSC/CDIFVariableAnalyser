@@ -130,9 +130,47 @@ class DatasetInfoIO(BaseModel):
         return DatasetInfo.from_dict(self.model_dump())
 
 
+class ShaclOut(BaseModel):
+    # Required fields of the Dataset tab's checklist that are empty (title, licence, date
+    # modified): the converter writes a stand-in, so SHACL does not flag them.
+    missing_required: list[str] = Field(default_factory=list)
+    checked: bool
+    reason: str | None = None
+    shapes: str | None = None
+    violations: list[str] = Field(default_factory=list, description="distinct messages, at most 50")
+    violation_count: int = 0
+    warnings: int = 0
+    warning_messages: list[str] = Field(default_factory=list, description="distinct messages, at most 50")
+
+
+class QleverSaveOut(BaseModel):
+    uuid: str
+    graph: str
+    dataset_iri: str
+    triples: int
+    saved_at: str
+    info: DatasetInfoIO = Field(description="the dataset description, with the record IRI written back")
+    shacl: ShaclOut
+
+
+class QleverDocumentOut(BaseModel):
+    uuid: str
+    graph: str
+    title: str = ""
+    dataset_iri: str | None = None
+    source_file: str | None = None
+    saved_at: str | None = None
+    saved_by: str | None = None
+    triples: int | None = None
+
+
 class FileInfo(BaseModel):
     file_id: str
     filename: str
+    # Set for a metadata-only session opened from a saved document: no data rows, and
+    # the record count of the source.
+    opened_from: str | None = None
+    source_rows: int | None = None
     file_format: str
     number_rows: int
     number_variables: int
@@ -166,6 +204,8 @@ class FileInfo(BaseModel):
             info=DatasetInfoIO.from_info(meta.info),
             file_size=meta.file_size,
             file_md5=meta.file_md5,
+            opened_from=meta.opened_from,
+            source_rows=meta.source_rows,
         )
 
 
@@ -323,6 +363,7 @@ class StatisticsOut(BaseModel):
     )
     degraded: bool = Field(description="True when --everything was skipped because the file is large")
     elapsed_ms: int = 0
+    saved: bool = Field(False, description="The statistics of the saved document (a session opened from QLever, no data)")
     variables: list[VariableStatsOut] = Field(default_factory=list)
 
     @classmethod

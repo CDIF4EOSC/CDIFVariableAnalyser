@@ -8,6 +8,7 @@ select their targets with SPARQL.
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 from dataclasses import replace
@@ -84,3 +85,14 @@ def test_attribute_qualifies_the_measures(documents):
     essround = next(v for v in documents["attribute"]["schema:variableMeasured"] if v["schema:name"] == "essround")
     assert essround["cdif:role"] == "Attribute"
     assert {"@id": "#instanceVariable-ppltrst"} in essround["cdif:qualifies"]
+
+
+@pytest.mark.parametrize("profile", PROFILES)
+def test_uuid_ids_no_violations(documents, ess11, profile):
+    """The CDIF as the API writes it, every node named ``urn:uuid:``."""
+    from ddicdi.cdi.ids import assign_ids
+
+    doc = copy.deepcopy(documents["statistics"])  # assign_ids rewrites in place; the fixture is shared
+    named, _ = assign_ids(doc, ess11.meta, base_iri=doc["@id"])
+    violations = [m for sev, m in _results(named, _shapes(profile)) if sev == "Violation"]
+    assert violations == []

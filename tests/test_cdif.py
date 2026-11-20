@@ -64,7 +64,7 @@ def test_generate_cdif_download(client):  # noqa: F811
     assert client.post(f"/api/files/{fid}/generate", params={"format": "xml"}, json={}).status_code == 422
 
 
-def test_convert_one_shot_cdif(client):  # noqa: F811
+def test_convert_one_shot_cdif(client, readable_ids):  # noqa: F811
     with ESS11_SAV.open("rb") as fh:
         r = client.post(
             "/api/convert",
@@ -73,7 +73,7 @@ def test_convert_one_shot_cdif(client):  # noqa: F811
         )
     assert r.status_code == 200, r.text
     doc = json.loads(r.content)
-    assert doc["@id"] == "urn:ddi-cdi:ESS11-subset" and len(doc["schema:variableMeasured"]) == 13
+    assert doc["@id"].startswith("urn:uuid:") and len(doc["schema:variableMeasured"]) == 13
     assert len(doc["schema:distribution"][0]["cdif:hasPhysicalMapping"]) == 13
     assert "cdif:isDescribedBy_StatisticsCollection" in _var(doc, "ppltrst")
     assert list(client.app.state.store.root.iterdir()) == []
@@ -117,12 +117,12 @@ INFO = {
 }
 
 
-def test_dataset_info_round_trip_and_cdif(client):  # noqa: F811
+def test_dataset_info_round_trip_and_cdif(client, readable_ids):  # noqa: F811
     fid = _upload(client).json()["file_id"]
     suggested = client.get(f"/api/files/{fid}").json()["info"]
     today = date.today().isoformat()
     assert suggested["date_published"] == suggested["date_modified"] == today
-    assert suggested["title"] and suggested["record_id"] == "urn:ddi-cdi:ESS11-subset"
+    assert suggested["title"] and suggested["record_id"].startswith("urn:uuid:")
     assert suggested["creators"] == []
     r = client.put(f"/api/files/{fid}/info", json=INFO)
     assert r.status_code == 200, r.text

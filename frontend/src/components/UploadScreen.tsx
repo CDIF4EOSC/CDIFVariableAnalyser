@@ -7,6 +7,8 @@ interface Props {
   error: string | null;
   health: { version: string; qsv: string | null } | null;
   onApiDocs: () => void;
+  /** Set when the server has a QLever store: opens the saved documents. */
+  onQlever?: () => void;
   supported: string[];
   apiKeyRequired: boolean;
   apiKey: string;
@@ -49,7 +51,7 @@ function fmtSize(n: number): string {
   return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
-export function UploadScreen({ onFile, busy, error, health, onApiDocs, supported, apiKeyRequired, apiKey, onApiKey }: Props) {
+export function UploadScreen({ onFile, busy, error, health, onApiDocs, onQlever, supported, apiKeyRequired, apiKey, onApiKey }: Props) {
   const [over, setOver] = useState(false);
   const [pending, setPending] = useState<File | null>(null);
   const input = useRef<HTMLInputElement>(null);
@@ -69,6 +71,7 @@ export function UploadScreen({ onFile, busy, error, health, onApiDocs, supported
           <span className="pill" style={{ background: "#1e293b", color: "#94a3b8", letterSpacing: "0.08em", fontWeight: 600 }}>PROTOTYPE</span>
         </a>
         <span className="grow" />
+        {onQlever && <button type="button" className="hbtn" onClick={onQlever}>Import from QLever</button>}
         <button type="button" className="hbtn" onClick={onApiDocs}><IconCode /> REST API docs</button>
       </header>
       <main className="upload">

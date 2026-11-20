@@ -56,3 +56,10 @@ def work_dir(tmp_path) -> Path:
     d.mkdir()
     yield d
     shutil.rmtree(d, ignore_errors=True)
+
+
+@pytest.fixture()
+def readable_ids(monkeypatch):
+    """Outputs with the symbolic ``#instanceVariable-x`` ids instead of UUIDs (DDI_READABLE_IDS),
+    for tests that find elements by them."""
+    monkeypatch.setattr(settings, "readable_ids", True)

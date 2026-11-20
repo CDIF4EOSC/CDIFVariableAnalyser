@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ElementView } from "../diff";
-import { countByType, graphKey, idsForVariable } from "../diff";
+import { countByType, graphKey } from "../diff";
 import type { ChangeKind, JsonLdDoc, OutputFormat } from "../types";
 import { IconCopy, IconSearch, IconX } from "./Icons";
 
@@ -8,6 +8,8 @@ interface Props {
   doc: JsonLdDoc | null;
   format: OutputFormat;
   views: ElementView[];
+  /** Element IRIs of each variable, from the server (the IRIs themselves are UUIDs). */
+  variableIds: Record<string, string[]>;
   status: "idle" | "busy" | "error";
   elapsedMs: number | null;
   error: string | null;
@@ -173,7 +175,7 @@ export function JsonPreview(p: Props) {
     }
     return { changed, added, removed, objects };
   }, [p.views]);
-  const varIds = useMemo(() => (p.focusVar ? idsForVariable(p.views, p.focusVar) : null), [p.views, p.focusVar]);
+  const varIds = useMemo(() => (p.focusVar ? new Set(p.variableIds[p.focusVar] ?? []) : null), [p.variableIds, p.focusVar]);
 
   const { lines, totalLines, capped, firstHighlight } = useMemo(() => {
     if (!p.doc) return { lines: [] as Line[], hidden: 0, totalLines: 0, capped: false, firstHighlight: null as number | null };

@@ -41,7 +41,7 @@ export function AddVariableDrawer({ variables, rowsInOutput, onClose, onAdd }: P
   const nLabels = labels.filter((l) => l.code.trim()).length;
 
   const willAdd = useMemo(() => {
-    const out = [`+ InstanceVariable #instanceVariable-${name || "…"}`];
+    const out = [`+ InstanceVariable ${name || "…"} (with its own UUID)`];
     for (const r of roles) out.push(`+ ${r.charAt(0).toUpperCase() + r.slice(1)}Component`);
     if (roles.has("identifier")) out.push("+ PrimaryKeyComponent");
     out.push("+ SubstantiveValueDomain" + (nLabels ? ", EnumerationDomain" : ""));

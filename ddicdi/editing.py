@@ -9,6 +9,7 @@ so no engine call is needed after the initial import.
 from __future__ import annotations
 
 import csv
+import io
 import math
 import os
 import re
@@ -16,6 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+from . import limits
 from .config import settings
 from .data import Dataset
 from .models import Concept, DatasetMeta, MissingRange, Variable, normalize_number
@@ -47,6 +49,20 @@ class VariablePatch:
     unit_of_measure: str | None = None  # "" clears
     concepts: list[dict[str, Any]] | None = None  # [{"uri": ..., "pref_label": ...}]
     functions: list[str] | None = None  # ["Weight", ...]; [] clears
+
+
+def _limit(check, *args) -> None:
+    """Run a :mod:`limits` check; an edit over a limit is an ``EditError`` (400)."""
+    try:
+        check(*args)
+    except limits.LimitError as exc:
+        raise EditError(str(exc)[:1].upper() + str(exc)[1:])
+
+
+def _check_name(name: str) -> None:
+    if not _NAME_RE.match(name):
+        raise EditError(f"Invalid variable name {name[:80]!r}")
+    _limit(limits.check_name, name)
 
 
 def _parse_unit(text: str) -> str | None:
@@ -82,6 +98,8 @@ def _parse_concepts(items: Iterable[dict[str, Any]]) -> list[Concept]:
 def _parse_missing(var_numeric: bool, ranges: Iterable[dict[str, Any]]) -> list[MissingRange]:
     out: list[MissingRange] = []
     for r in ranges:
+        if len(out) >= settings.max_missing_ranges:
+            raise EditError(f"A variable may have at most {settings.max_missing_ranges} missing values or ranges")
         lo, hi = r.get("lo"), r.get("hi", r.get("lo"))
         if lo is None:
             raise EditError("Missing range needs at least 'lo'")
@@ -95,7 +113,10 @@ def _parse_missing(var_numeric: bool, ranges: Iterable[dict[str, Any]]) -> list[
                 flo, fhi = fhi, flo
             out.append(MissingRange(flo, fhi))
         else:
-            out.append(MissingRange(str(lo), str(hi)))
+            lo, hi = str(lo), str(hi)
+            if max(len(lo), len(hi)) > settings.max_code_chars:  # GitLab #19
+                raise EditError(f"A missing value may be at most {settings.max_code_chars} characters")
+            out.append(MissingRange(lo, hi))
     return out
 
 
@@ -154,10 +175,13 @@ def update_variable(meta: DatasetMeta, name: str, patch: VariablePatch) -> Varia
     except KeyError:
         raise EditError(f"Unknown variable {name!r}")
     if patch.label is not None:
+        _limit(limits.check_label, patch.label, "variable label")
         var.label = patch.label or None
     if patch.format is not None:
+        _limit(limits.check_format, name, patch.format)
         var.format = check_format(patch.format)
     if patch.storage_type is not None:
+        _limit(limits.check_format, name, patch.storage_type, "storage type")
         var.storage_type = patch.storage_type.strip().lower()
         var.numeric = var.storage_type in _NUMERIC_TYPES
     if patch.measure is not None:
@@ -172,6 +196,7 @@ def update_variable(meta: DatasetMeta, name: str, patch: VariablePatch) -> Varia
             if code == "":
                 continue
             cleaned[normalize_number(code) if var.numeric else code] = str(label)
+        _limit(limits.check_value_labels, var.name, cleaned)
         var.value_labels = cleaned
     if patch.missing is not None:
         var.missing_ranges = _parse_missing(var.numeric, patch.missing)
@@ -216,12 +241,14 @@ def work_dir_usage(work_root: Path) -> int:
 
 
 def _size_limit(dataset: Dataset) -> int:
-    """The largest ``data.csv`` an edit may write: the per-file cap, lowered to what the
-    work-dir cap still allows (the current file is replaced, so its size counts as free).
+    """The largest ``data.csv`` (in bytes) an edit may write: the per-file cap, lowered to
+    what the work-dir cap still allows (the current file is replaced, so its size counts
+    as free).
 
     The work-dir cap only ever refuses growth: however full the work directory is (other
     users' uploads count too), an upload can always be rewritten at its current size, so
-    cell edits, renames and deletions keep working (security #10)."""
+    cell edits, renames and deletions keep working (security #10). Since the rewrite is
+    measured in bytes (GitLab #16), a full work directory admits no growth at all."""
     limit = settings.edit_max_csv_bytes
     if settings.work_dir_max_bytes > 0:
         current = dataset.csv_path.stat().st_size if dataset.csv_path.exists() else 0
@@ -230,11 +257,26 @@ def _size_limit(dataset: Dataset) -> int:
     return limit
 
 
+class _ByteCounter:
+    """A text sink for ``csv.writer`` that writes UTF-8 to a binary file and counts the
+    bytes, so size limits compare bytes with bytes (GitLab #16)."""
+
+    def __init__(self, fh) -> None:
+        self.fh = fh
+        self.bytes = 0
+
+    def write(self, text: str) -> int:
+        data = text.encode("utf-8")
+        self.fh.write(data)
+        self.bytes += len(data)
+        return len(text)
+
+
 def _rewrite(dataset: Dataset, transform: Callable[[list[str], int], list[str] | None], header: list[str]) -> int:
     """Stream ``data.csv`` through ``transform(row, index)``; returns the row count.
 
-    ``transform`` returns the new row or ``None`` to drop it. The rewrite is refused
-    when the new file would pass :func:`_size_limit`; on any failure the temporary
+    ``transform`` returns the new row or ``None`` to drop it. The rewrite is refused as
+    soon as the new file's bytes pass :func:`_size_limit`; on any failure the temporary
     file is removed and ``data.csv`` is left as it was.
     """
     src = dataset.csv_path
@@ -242,22 +284,23 @@ def _rewrite(dataset: Dataset, transform: Callable[[list[str], int], list[str] |
     limit = _size_limit(dataset)
     count = 0
     try:
-        with src.open(newline="", encoding="utf-8") as fin, tmp.open("w", newline="", encoding="utf-8") as fout:
+        with src.open(newline="", encoding="utf-8") as fin, tmp.open("wb") as raw:
             reader = csv.reader(fin)
-            writer = csv.writer(fout, lineterminator="\n")
+            out = _ByteCounter(raw)
+            writer = csv.writer(out, lineterminator="\n")
             next(reader, None)
-            # writerow returns the characters written; UTF-8 bytes can be more, so the
-            # cap is approximate for non-ASCII text but still bounds the file.
-            written = writer.writerow(header)
+            writer.writerow(header)
             for i, row in enumerate(reader):
                 new = transform(row, i)
                 if new is not None:
-                    written += writer.writerow(new)
+                    writer.writerow(new)
                     count += 1
-                    if written > limit:
+                    if out.bytes > limit:
                         raise EditError(
                             f"Edit refused: the data file would exceed the storage limit of {max(limit, 0)} bytes"
                         )
+            if out.bytes > limit:  # the header alone
+                raise EditError(f"Edit refused: the data file would exceed the storage limit of {max(limit, 0)} bytes")
         os.replace(tmp, src)
     except BaseException:
         tmp.unlink(missing_ok=True)
@@ -286,13 +329,17 @@ class NewVariable:
 def add_variable(dataset: Dataset, spec: NewVariable) -> Variable:
     meta = dataset.meta
     name = spec.name.strip()
-    if not _NAME_RE.match(name):
-        raise EditError(f"Invalid variable name {name!r}")
+    _check_name(name)
     if name in meta.column_names:
         raise EditError(f"Variable {name!r} already exists")
     if settings.max_variables > 0 and len(meta.variables) >= settings.max_variables:
         raise EditError(f"The dataset already has the maximum of {settings.max_variables} variables")
     numeric = spec.storage_type.strip().lower() in _NUMERIC_TYPES
+    value_labels = {str(k): str(v) for k, v in spec.value_labels.items() if str(k).strip()}
+    _limit(limits.check_format, name, spec.format)
+    _limit(limits.check_format, name, spec.storage_type, "storage type")
+    _limit(limits.check_label, spec.label, "variable label")
+    _limit(limits.check_value_labels, name, value_labels)
     var = Variable(
         name=name,
         label=spec.label or None,
@@ -300,7 +347,7 @@ def add_variable(dataset: Dataset, spec: NewVariable) -> Variable:
         storage_type=spec.storage_type.strip().lower(),
         measure=spec.measure if spec.measure in ("nominal", "ordinal", "scale", "unknown") else "unknown",
         numeric=numeric,
-        value_labels={str(k): str(v) for k, v in spec.value_labels.items() if str(k).strip()},
+        value_labels=value_labels,
         missing_ranges=_parse_missing(numeric, spec.missing),
         unit_of_measure=_parse_unit(spec.unit_of_measure or ""),
         concepts=_parse_concepts(spec.concepts),
@@ -363,8 +410,7 @@ def rename_variable(dataset: Dataset, name: str, new_name: str) -> Variable:
     new_name = new_name.strip()
     if name not in meta.column_names:
         raise EditError(f"Unknown variable {name!r}")
-    if not _NAME_RE.match(new_name):
-        raise EditError(f"Invalid variable name {new_name!r}")
+    _check_name(new_name)
     if new_name != name and new_name in meta.column_names:
         raise EditError(f"Variable {new_name!r} already exists")
     header = [new_name if n == name else n for n in meta.column_names]
@@ -413,12 +459,14 @@ def append_row(dataset: Dataset, values: dict[str, str] | None = None) -> int:
     for value in values.values():
         check_cell(value)
     row = ["" if values.get(n) is None else str(values.get(n, "")) for n in meta.column_names]
-    line_size = sum(len(c.encode("utf-8")) + 3 for c in row) + 1
+    line = io.StringIO()
+    csv.writer(line, lineterminator="\n").writerow(row)
+    data = line.getvalue().encode("utf-8")  # exactly what is appended (GitLab #16)
     limit = _size_limit(dataset)
-    if dataset.csv_path.stat().st_size + line_size > limit:
+    if dataset.csv_path.stat().st_size + len(data) > limit:
         raise EditError(f"Edit refused: the data file would exceed the storage limit of {max(limit, 0)} bytes")
-    with dataset.csv_path.open("a", newline="", encoding="utf-8") as fh:
-        csv.writer(fh, lineterminator="\n").writerow(row)
+    with dataset.csv_path.open("ab") as fh:
+        fh.write(data)
     meta.number_rows += 1
     return meta.number_rows - 1
 

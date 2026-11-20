@@ -101,3 +101,13 @@ def test_csv_upload_conforms(qsv, tmp_path, work_dir, shapes, context, include_s
     assert next(e for e in doc["DDICDIModels"] if e["@id"] == "#tabularTextDataSet")["@type"] == "TabularTextDataSet"
     conforms, report = _validate(doc, shapes, context)
     assert conforms, report
+
+
+@pytest.mark.parametrize("include_statistics", [False, True])
+def test_uuid_ids_conform(ess11, shapes, context, include_statistics):
+    """The output as the API writes it: every node, nested ones too, named ``urn:uuid:``."""
+    from ddicdi.cdi.ids import assign_ids
+
+    doc = build_document(ess11, options=GenerateOptions(max_rows=2, include_statistics=include_statistics))
+    conforms, report = _validate(assign_ids(doc, ess11.meta)[0], shapes, context)
+    assert conforms, report

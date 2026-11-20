@@ -98,6 +98,10 @@ h1, h2, h3 { font-family: var(--font-display); margin: 0; }
 .fmt-switch button:hover { color: #e2e8f0; }
 .fmt-switch button.on { background: var(--dark-3); color: #fff; font-weight: 600; }
 .fmt-switch button.on.open { background: #334155; }
+/* Room for the QLever group on narrower screens (the download file name stays in its tooltip). */
+@media (max-width: 1400px) { .wide-only { display: none !important; } }
+.qlever-group .group-label { display: inline-flex; align-items: center; padding: 0 6px 0 8px; color: #64748b; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
+.qlever-group button:disabled { color: #64748b; cursor: default; }
 .out-dot { width: 8px; height: 8px; border-radius: 50%; background: #64748b; display: inline-block; }
 .out-dot.idle { background: var(--green); }
 .out-dot.busy { background: var(--amber); }

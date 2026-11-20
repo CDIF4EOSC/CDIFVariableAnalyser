@@ -1,4 +1,4 @@
-import type { CategoryStats, DatasetInfo, EnrichKind, EnrichResponse, FileInfo, JsonLdDoc, OutputBody, OutputFormat, PreviewPage, Statistics, Variable } from "./types";
+import type { CategoryStats, DatasetInfo, EnrichKind, EnrichResponse, FileInfo, JsonLdDoc, OutputBody, OutputFormat, PreviewPage, QleverDocument, QleverFormat, QleverSaveResult, ShaclResult, Statistics, Variable } from "./types";
 
 let apiKey = "";
 export function setApiKey(key: string) {
@@ -46,16 +46,18 @@ export const api = {
     request<PreviewPage>(`/api/files/${id}/preview?rows=${rows}&offset=${offset}`),
   remove: (id: string) => request<void>(`/api/files/${id}`, { method: "DELETE" }),
 
+  /** The preview document, and the element IRIs of each variable: the IRIs are UUIDs,
+   *  so they do not say which variable an element belongs to. */
   async output(
     id: string,
     body: OutputBody,
     format: OutputFormat = "ddicdi",
-  ): Promise<JsonLdDoc> {
+  ): Promise<{ document: JsonLdDoc; variable_ids: Record<string, string[]> }> {
     const headers = new Headers({ "Content-Type": "application/json" });
     if (apiKey) headers.set("X-API-Key", apiKey);
-    const res = await fetch(`/api/files/${id}/output?format=${format}`, { method: "POST", headers, body: JSON.stringify(body) });
+    const res = await fetch(`/api/files/${id}/output?format=${format}&variable_ids=true`, { method: "POST", headers, body: JSON.stringify(body) });
     if (!res.ok) throw new ApiError(res.status, (await res.json().catch(() => ({}))).detail ?? res.statusText);
-    return (await res.json()) as JsonLdDoc;
+    return (await res.json()) as { document: JsonLdDoc; variable_ids: Record<string, string[]> };
   },
 
   async download(
@@ -114,5 +116,24 @@ export const api = {
     return request<CategoryStats>(
       `/api/files/${id}/statistics/${encodeURIComponent(name)}/categories${q.size ? `?${q}` : ""}`,
     );
+  },
+
+  // QLever store: save the CDIF of this document; list and read back saved documents.
+  saveToQlever: (id: string, body: OutputBody) =>
+    request<QleverSaveResult>(`/api/files/${id}/qlever`, { method: "POST", body: JSON.stringify(body) }),
+  checkCdif: (id: string, body: OutputBody) =>
+    request<ShaclResult>(`/api/files/${id}/cdif/check`, { method: "POST", body: JSON.stringify(body) }),
+  /** Open a saved document in the editor: a metadata-only session without data rows. */
+  openQlever: (uuid: string) => request<FileInfo>(`/api/qlever/documents/${uuid}/open`, { method: "POST" }),
+  qleverDocuments: () => request<QleverDocument[]>("/api/qlever/documents"),
+  async qleverDocument(uuid: string, format: QleverFormat = "jsonld"): Promise<{ text: string; blob: Blob; filename: string }> {
+    const headers = new Headers();
+    if (apiKey) headers.set("X-API-Key", apiKey);
+    const res = await fetch(`/api/qlever/documents/${uuid}?format=${format}&download=true`, { headers });
+    if (!res.ok) throw new ApiError(res.status, (await res.json().catch(() => ({}))).detail ?? res.statusText);
+    const cd = res.headers.get("Content-Disposition") ?? "";
+    const m = /filename="?([^";]+)"?/.exec(cd);
+    const blob = await res.blob();
+    return { text: await blob.text(), blob, filename: m ? m[1] : uuid };
   },
 };

@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
@@ -47,6 +48,11 @@ ATTEMPTS = 3  # total POSTs per batch or variable, retries included
 MAX_NAME_CHARS = 128
 MAX_LABEL_CHARS = 500
 MAX_VALUE_LABEL_CHARS = 200
+# Every other field is bounded too, so one variable's item has a fixed maximum size
+# (GitLab #19).
+MAX_FORMAT_CHARS = 64
+MAX_MISSING_VALUES = 20
+MAX_MISSING_VALUE_CHARS = 100
 KINDS = ("unit", "concept", "role", "function", "measure")
 FIELD_BY_KIND = {
     "unit": "unit_of_measure",
@@ -122,9 +128,10 @@ class EnrichResult:
 
 def _missing_values(var: Variable) -> list[str]:
     out = []
-    for r in var.missing_ranges:
+    for r in var.missing_ranges[:MAX_MISSING_VALUES]:
         d = r.to_dict()
-        out.append(d["lo"] if d["lo"] == d["hi"] else f"{d['lo']}-{d['hi']}")
+        text = d["lo"] if d["lo"] == d["hi"] else f"{d['lo']}-{d['hi']}"
+        out.append(text[:MAX_MISSING_VALUE_CHARS])
     return out
 
 
@@ -143,14 +150,26 @@ def variable_input(var: Variable) -> dict[str, Any]:
     item: dict[str, Any] = {
         "variable_name": var.name,
         "variable_label": (var.label or "")[:MAX_LABEL_CHARS],
-        "variable_datatype": var.storage_type,
-        "variable_format": var.format,
+        "variable_datatype": (var.storage_type or "")[:MAX_FORMAT_CHARS],
+        "variable_format": (var.format or "")[:MAX_FORMAT_CHARS],
         "variable_measure": var.measure if var.measure != "unknown" else None,
         "variable_value_labels": labels[:MAX_VALUE_LABELS],
         "variable_value_labels_total": len(labels) if labels else None,
         "variable_missing_values": _missing_values(var),
     }
     return {k: v for k, v in item.items() if v not in (None, "", [])}
+
+
+# The payload of each variable of the request in flight, built once and off the event
+# loop by ``enrich`` (GitLab #15): its cost grows with the value labels and missing
+# ranges, and every kind, batch and retry would otherwise build it again on the loop.
+_INPUTS: ContextVar[dict[int, dict[str, Any]] | None] = ContextVar("enrich_inputs", default=None)
+
+
+def _input(var: Variable) -> dict[str, Any]:
+    cached = _INPUTS.get()
+    hit = cached.get(id(var)) if cached is not None else None
+    return hit if hit is not None else variable_input(var)
 
 
 # -- normalisation ----------------------------------------------------------------------
@@ -293,7 +312,7 @@ async def _batched(
 
     async def one(batch: list[Variable]) -> None:
         try:
-            data = await _post(client, url, {"variables": [variable_input(v) for v in batch]}, headers)
+            data = await _post(client, url, {"variables": [_input(v) for v in batch]}, headers)
         except EnrichError as exc:
             errors.append({"name": None, "kind": kind, "message": str(exc)})
             return
@@ -389,7 +408,7 @@ async def suggest_concepts(
         last = ""
         for attempt in range(ATTEMPTS):
             try:
-                data = await _post(client, url, {"variables": [variable_input(v)]}, headers, attempts=1)
+                data = await _post(client, url, {"variables": [_input(v)]}, headers, attempts=1)
             except _Refused as exc:
                 errors.append({"name": v.name, "kind": "concept", "message": str(exc)})
                 return
@@ -430,6 +449,8 @@ async def enrich(
     result = EnrichResult()
     too_long = [v for v in variables if len(v.name) > MAX_NAME_CHARS]
     variables = [v for v in variables if len(v.name) <= MAX_NAME_CHARS]
+    inputs = await asyncio.to_thread(lambda: {id(v): variable_input(v) for v in variables})
+    _INPUTS.set(inputs)  # this task's context; the kinds' tasks below copy it
     own = client is None
     client = client or httpx.AsyncClient(timeout=settings.n8n_timeout)
     limited: Any = _Limited(client, settings.n8n_concurrency)

@@ -40,6 +40,11 @@ class GenerateOptions:
     statistics_weight: str | None = None  # variable name, or "auto" for the first Weight one
     # Which statistics to emit, out of ``statistics.STATISTIC_NAMES``; None = all of them.
     statistics_include: Collection[str] | None = None
+    # What the build was admitted for (GitLab #12, #14): at most ``row_limit`` rows
+    # (None = no limit) holding at most ``max_data_bytes`` of data (0 = no limit),
+    # whatever data.csv holds by the time the rows are read.
+    row_limit: int | None = None
+    max_data_bytes: int = 0
 
 
 # -- physical structure -----------------------------------------------------------
@@ -68,7 +73,7 @@ def generate_PhysicalDataSet(meta: DatasetMeta, spssfile: str) -> list[Element]:
         "@id": physical_data_set_id(meta),
         "@type": "TabularTextDataSet" if is_tabular_text(meta) else "StructuredDataSet",
         "name": {"@type": "ObjectName", "name": spssfile},
-        "recordCount": meta.number_rows,
+        "recordCount": meta.record_count,
     }
     if meta.encoding:
         el["encoding"] = _cve(meta.encoding)
@@ -211,7 +216,7 @@ def generate_WideDataSet(meta: DatasetMeta, spssfile: str) -> list[Element]:
         "@id": "#wideDataSet",
         "@type": "WideDataSet",
         "name": {"@type": "ObjectName", "name": spssfile},
-        "recordCount": meta.number_rows,
+        "recordCount": meta.record_count,
         "isStructuredBy": "#wideDataStructure",
         # every InstanceVariable has to be in a DataSet (SHACL minCount on the inverse)
         "has_InstanceVariable": [f"#instanceVariable-{v}" for v in meta.column_names],
@@ -602,13 +607,14 @@ def build_document(dataset: Dataset, spssfile: str | None = None, options: Gener
     if options.process_all_rows:
         n_rows = meta.number_rows
         instance_values: list[Element] = []
-        for start, rows in dataset.iter_chunks(options.chunk_size):
+        for start, rows in dataset.iter_chunks(options.chunk_size, options.row_limit, options.max_data_bytes):
             instance_values.extend(generate_InstanceValue(meta, rows, start))
         # Row count may differ from the header count for odd files; trust the data.
         if instance_values:
             n_rows = max(n_rows, (len(instance_values) // max(len(meta.variables), 1)))
     else:
-        rows = dataset.head(options.max_rows)
+        n = options.max_rows if options.row_limit is None else min(options.max_rows, options.row_limit)
+        rows = dataset.head(n, options.max_data_bytes)
         n_rows = len(rows)
         instance_values = generate_InstanceValue(meta, rows, 0)
 

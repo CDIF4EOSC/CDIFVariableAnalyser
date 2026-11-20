@@ -14,6 +14,7 @@ import json
 import os
 import signal
 import subprocess
+import tempfile
 import threading
 from pathlib import Path
 
@@ -61,15 +62,21 @@ class Qsv:
 
     # -- generic -----------------------------------------------------------------
 
-    def run(self, *args: str, input_bytes: bytes | None = None, timeout: float | None = None) -> bytes:
+    def run(
+        self, *args: str, input_bytes: bytes | None = None, timeout: float | None = None, max_output: int = 0
+    ) -> bytes:
         """Run qsv; ``timeout`` defaults to ``settings.qsv_timeout`` (0 = none).
 
         The child gets the file-size and memory limits from the settings, so no qsv call
-        reachable from an upload can run, write or allocate without bound.
+        reachable from an upload can run, write or allocate without bound. With
+        ``max_output`` at most that many bytes of stdout are read; a child that writes
+        more is killed and the call fails (GitLab #11).
         """
         env = dict(os.environ, QSV_PROGRESSBAR="0", QSV_NO_UPDATE="1")
         if timeout is None:
             timeout = settings.qsv_timeout or None
+        if max_output > 0 and input_bytes is None:
+            return self._run_bounded(args, max_output, timeout, env)
         max_bytes = settings.import_max_bytes
         try:
             proc = subprocess.run(
@@ -92,6 +99,57 @@ class Qsv:
             )
         return proc.stdout
 
+    def _run_bounded(self, args: tuple[str, ...], max_output: int, timeout: float | None, env: dict) -> bytes:
+        """:meth:`run` reading stdout incrementally, failing once it passes ``max_output``."""
+        max_bytes = settings.import_max_bytes
+        with tempfile.TemporaryFile() as err:
+            proc = subprocess.Popen(
+                [self.binary, *args],
+                stdout=subprocess.PIPE,
+                stderr=err,
+                env=env,
+                preexec_fn=_child_limits(max_bytes, settings.qsv_max_memory_bytes),
+            )
+            timer = threading.Timer(timeout, proc.kill) if timeout else None
+            if timer:
+                timer.start()
+            chunks: list[bytes] = []
+            size = 0
+            try:
+                assert proc.stdout is not None
+                while size <= max_output:
+                    chunk = proc.stdout.read(min(1 << 16, max_output + 1 - size))
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    size += len(chunk)
+                if size > max_output:
+                    proc.kill()
+                proc.stdout.close()
+                returncode = proc.wait()
+            finally:
+                if timer:
+                    timer.cancel()
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait()
+            what = args[0] if args else ""
+            if size > max_output:
+                raise QsvError(
+                    f"qsv {what} wrote more than {max_output} bytes of metadata; "
+                    "the file has too many columns or too much metadata"
+                )
+            if returncode != 0:
+                if timer and returncode == -signal.SIGKILL:
+                    raise QsvError(f"qsv {' '.join(args)} timed out after {timeout}s")
+                err.seek(0)
+                stderr = err.read(64 * 1024)
+                too_large = returncode == -getattr(signal, "SIGXFSZ", 0) or b"File too large" in stderr
+                if max_bytes and too_large:
+                    raise QsvError(f"qsv {what} output larger than the limit of {max_bytes} bytes")
+                raise QsvError(f"qsv {' '.join(args)} failed ({returncode}): {stderr.decode('utf-8', 'replace').strip()}")
+        return b"".join(chunks)
+
     def version(self) -> str:
         return self.run("--version").decode().strip()
 
@@ -102,7 +160,7 @@ class Qsv:
     # -- readstat ---------------------------------------------------------------
 
     def readstat_metadata(self, path: str | os.PathLike[str]) -> dict:
-        out = self.run("readstat", "--metadata", "json", str(path))
+        out = self.run("readstat", "--metadata", "json", str(path), max_output=settings.qsv_max_output_bytes)
         return json.loads(out)
 
     @property
@@ -130,7 +188,7 @@ class Qsv:
     # -- csv --------------------------------------------------------------------
 
     def sniff(self, path: str | os.PathLike[str]) -> dict:
-        out = self.run("sniff", "--json", str(path))
+        out = self.run("sniff", "--json", str(path), max_output=settings.qsv_max_output_bytes)
         return json.loads(out)
 
     def normalize_csv(
@@ -143,11 +201,17 @@ class Qsv:
         args += [str(path), "-o", str(out_path)]
         self.run(*args)
 
+    def rename_columns(
+        self, path: str | os.PathLike[str], out_path: str | os.PathLike[str], names: list[str]
+    ) -> None:
+        """Copy a CSV with a new header row. ``names`` must hold no comma or quote."""
+        self.run("rename", ",".join(names), str(path), "-o", str(out_path))
+
     def count(self, csv_path: str | os.PathLike[str]) -> int:
         return int(self.run("count", str(csv_path)).decode().strip())
 
     def headers(self, csv_path: str | os.PathLike[str]) -> list[str]:
-        out = self.run("headers", "--just-names", str(csv_path)).decode()
+        out = self.run("headers", "--just-names", str(csv_path), max_output=settings.qsv_max_output_bytes).decode()
         return [line for line in out.splitlines() if line != ""]
 
     def column_types(self, csv_path: str | os.PathLike[str]) -> list[str]:
@@ -165,6 +229,7 @@ class Qsv:
             "--dates-whitelist",
             "all",
             "--jsonl",
+            max_output=settings.qsv_max_output_bytes,
         ).decode("utf-8")
         return [json.loads(line)["type"] for line in out.splitlines() if line.strip()]
 
@@ -182,6 +247,7 @@ class Qsv:
             "--dates-whitelist",
             "all",
             "--jsonl",
+            max_output=settings.qsv_max_output_bytes,
         ).decode("utf-8")
         keep = ("field", "type", "min", "max", "max_length", "max_precision")
         return [
@@ -192,13 +258,18 @@ class Qsv:
     def slice(
         self, csv_path: str | os.PathLike[str], start: int = 0, length: int = 5, *, max_bytes: int = 0
     ) -> list[list[str]]:
+        return self.slice_checked(csv_path, start, length, max_bytes=max_bytes)[0]
+
+    def slice_checked(
+        self, csv_path: str | os.PathLike[str], start: int = 0, length: int = 5, *, max_bytes: int = 0
+    ) -> tuple[list[list[str]], bool]:
         """Return ``length`` records starting at 0-based ``start`` (header excluded).
 
         With ``max_bytes`` at most that much of qsv's output is read; qsv is then stopped
         and the record cut off at the limit is dropped, so fewer records come back.
         """
         if length <= 0:
-            return []
+            return [], False
         args = ("slice", "--start", str(start), "--len", str(length), str(csv_path))
         truncated = False
         if max_bytes > 0:
@@ -208,7 +279,7 @@ class Qsv:
         rows = list(csv.reader(io.StringIO(out.decode("utf-8", "replace"))))
         if truncated:
             rows = rows[:-1]
-        return rows[1:]  # drop header
+        return rows[1:], truncated  # drop header
 
     def _run_capped(self, args: tuple[str, ...], max_bytes: int) -> tuple[bytes, bool]:
         """Run qsv reading at most ``max_bytes`` of stdout; ``(output, truncated)``.
