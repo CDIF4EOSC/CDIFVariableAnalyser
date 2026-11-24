@@ -1,0 +1,257 @@
+{
+  "name": "metadata-image-description",
+  "id": "2FVWG3wVqn7oAaSs",
+  "active": true,
+  "nodes": [
+    {
+      "id": "img-webhook",
+      "name": "Webhook",
+      "webhookId": "5fd81087-dc04-43f5-8fa1-04929089a7bd",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "metadata-image-description",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "EG1cw8ySdLvD9zTw",
+          "name": "Metadata Enrichment Webhook Header Auth"
+        }
+      }
+    },
+    {
+      "id": "img-if",
+      "name": "Has Image?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        220,
+        300
+      ],
+      "parameters": {
+        "options": {},
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "has-image",
+              "leftValue": "={{ $binary.image?.mimeType ?? '' }}",
+              "rightValue": "image/",
+              "operator": {
+                "type": "string",
+                "operation": "startsWith"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "img-chain",
+      "name": "Describe Image",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "onError": "continueErrorOutput",
+      "position": [
+        460,
+        200
+      ],
+      "parameters": {
+        "promptType": "define",
+        "text": "Describe this image for a research data catalogue. Return a short title, a factual description and keywords.",
+        "hasOutputParser": true,
+        "messages": {
+          "messageValues": [
+            {
+              "message": "You write discovery metadata (schema.org / CDIF) for images deposited in a research data archive. Write in English. Title: at most 12 words, specific and factual, no quotes, no trailing full stop. Description: 2 to 4 sentences saying what the image shows (subjects, setting, visible text, type of image such as photograph, map, chart, scan of a document); do not guess names of people, places or dates that are not visible. Keywords: 5 to 10 short lowercase terms or phrases, most important first, no duplicates."
+            },
+            {
+              "type": "HumanMessagePromptTemplate",
+              "messageType": "imageBinary",
+              "binaryImageDataKey": "image",
+              "imageDetail": "auto"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "img-model",
+      "name": "Azure OpenAI Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAzureOpenAi",
+      "typeVersion": 1,
+      "position": [
+        420,
+        420
+      ],
+      "parameters": {
+        "model": "gpt-5.6-terra",
+        "options": {}
+      },
+      "credentials": {
+        "azureOpenAiApi": {
+          "id": "KKIwbsVKQUA5Kqyu",
+          "name": "Azure Open AI Modansa Terra"
+        }
+      }
+    },
+    {
+      "id": "img-parser",
+      "name": "Structured Output Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        600,
+        420
+      ],
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"title\": {\"type\": \"string\"},\n    \"description\": {\"type\": \"string\"},\n    \"keywords\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}}\n  },\n  \"required\": [\"title\", \"description\", \"keywords\"]\n}"
+      }
+    },
+    {
+      "id": "img-respond",
+      "name": "Respond OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        760,
+        120
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: true, title: $json.output.title, description: $json.output.description, keywords: $json.output.keywords }) }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "img-respond-fail",
+      "name": "Respond Model Failed",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        760,
+        300
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: false, error: 'the model could not describe the image' }) }}",
+        "options": {
+          "responseCode": 502
+        }
+      }
+    },
+    {
+      "id": "img-respond-bad",
+      "name": "Respond No Image",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        460,
+        520
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: false, error: 'send one image file in the multipart field \"image\"' }) }}",
+        "options": {
+          "responseCode": 400
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Has Image?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Image?": {
+      "main": [
+        [
+          {
+            "node": "Describe Image",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond No Image",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Describe Image": {
+      "main": [
+        [
+          {
+            "node": "Respond OK",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Model Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Azure OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Describe Image",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structured Output Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Describe Image",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "saveManualExecutions": false,
+    "saveDataErrorExecution": "none",
+    "saveDataSuccessExecution": "none",
+    "executionOrder": "v1",
+    "availableInMCP": true
+  },
+  "pinData": null,
+  "meta": null,
+  "tags": []
+}

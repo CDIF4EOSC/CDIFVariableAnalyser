@@ -15,7 +15,8 @@ import { OptionsPopover } from "./components/OptionsPopover";
 import { StatisticsPanel } from "./components/StatisticsPanel";
 import { Toasts, type Toast } from "./components/Toasts";
 import { UploadScreen } from "./components/UploadScreen";
-import type { Concept, DatasetInfo, Vocabularies, EnrichKind, EnrichResponse, FileInfo, JsonLdDoc, Options, OutputFormat, PreviewPage, QleverDocument, QleverSaveResult, ShaclResult, Statistics, Suggestion } from "./types";
+import { ImageWorkspace, forgetPictures } from "./components/ImageWorkspace";
+import type { Concept, DatasetInfo, ImageCollection, Vocabularies, EnrichKind, EnrichResponse, FileInfo, JsonLdDoc, Options, OutputFormat, PreviewPage, QleverDocument, QleverSaveResult, ShaclResult, Statistics, Suggestion } from "./types";
 import { ALL_STAT_NAMES, ENRICH_KINDS, sameFunctions } from "./types";
 
 interface Edit {
@@ -45,6 +46,7 @@ type View = "meta" | "data" | "stats" | "dataset";
 
 export default function App() {
   const [info, setInfo] = useState<FileInfo | null>(null);
+  const [images, setImages] = useState<ImageCollection | null>(null);
   const [page, setPage] = useState<PreviewPage | null>(null);
   const [pageSize, setPageSize] = useState(5);
   const [offset, setOffset] = useState(0);
@@ -293,6 +295,26 @@ export default function App() {
     } finally {
       setUploadBusy(false);
     }
+  };
+
+  /** Images open an image collection (CDIF per image) instead of a tabular file. */
+  const onImages = async (files: File[]) => {
+    setUploadBusy(true);
+    setUploadError(null);
+    try {
+      const c = await api.createImages(files);
+      c.rejected.forEach((r) => toast(`${r.filename}: ${r.reason}`, "err"));
+      setImages(c);
+    } catch (e) {
+      setUploadError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setUploadBusy(false);
+    }
+  };
+  const closeImages = () => {
+    if (images) void api.removeImages(images.id).catch(() => undefined);
+    forgetPictures();
+    setImages(null);
   };
 
   /** Open a document saved in QLever as a metadata-only session, in place of the open file. */
@@ -769,11 +791,29 @@ export default function App() {
   const baseName = useMemo(() => (info ? info.filename.replace(/\.[^.]+$/, "") : ""), [info]);
   const editCount = undoStack.length;
 
+  if (images) {
+    return (
+      <>
+        <ImageWorkspace
+          collection={images}
+          vocabularies={apiInfo?.vocabularies as Vocabularies | undefined}
+          onChange={setImages}
+          onClose={closeImages}
+          onApiDocs={() => setApiDocs(true)}
+          onToast={toast}
+        />
+        {apiDocs && <ApiDocsModal apiInfo={apiInfo} onClose={() => setApiDocs(false)} />}
+        <Toasts items={toasts} />
+      </>
+    );
+  }
+
   if (!info) {
     return (
       <>
         <UploadScreen
           onFile={onFile}
+          onImages={onImages}
           busy={uploadBusy}
           error={uploadError}
           health={health}

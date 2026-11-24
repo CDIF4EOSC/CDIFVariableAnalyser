@@ -1,4 +1,4 @@
-import type { CategoryStats, DatasetInfo, EnrichKind, EnrichResponse, FileInfo, JsonLdDoc, OutputBody, OutputFormat, PreviewPage, QleverDocument, QleverFormat, QleverSaveResult, ShaclResult, Statistics, Variable } from "./types";
+import type { CategoryStats, DatasetInfo, EnrichKind, EnrichResponse, FileInfo, ImageCheck, ImageCollection, ImageItem, ImageSuggestion, JsonLdDoc, OutputBody, OutputFormat, PreviewPage, QleverDocument, QleverFormat, QleverSaveResult, ShaclResult, Statistics, Variable } from "./types";
 
 let apiKey = "";
 export function setApiKey(key: string) {
@@ -126,6 +126,36 @@ export const api = {
   /** Open a saved document in the editor: a metadata-only session without data rows. */
   openQlever: (uuid: string) => request<FileInfo>(`/api/qlever/documents/${uuid}/open`, { method: "POST" }),
   qleverDocuments: () => request<QleverDocument[]>("/api/qlever/documents"),
+  // Image collections: CDIF metadata for images, one Dataset per image.
+  createImages: (files: File[]) => request<ImageCollection>("/api/images", { method: "POST", body: imageForm(files) }),
+  addImages: (id: string, files: File[]) =>
+    request<ImageCollection>(`/api/images/${id}/items`, { method: "POST", body: imageForm(files) }),
+  removeImages: (id: string) => request<void>(`/api/images/${id}`, { method: "DELETE" }),
+  removeImage: (id: string, imageId: string) =>
+    request<ImageCollection>(`/api/images/${id}/items/${imageId}`, { method: "DELETE" }),
+  putBundle: (id: string, bundle: DatasetInfo) =>
+    request<ImageCollection>(`/api/images/${id}/bundle`, { method: "PUT", body: JSON.stringify(bundle) }),
+  putImageInfo: (id: string, imageId: string, info: DatasetInfo) =>
+    request<ImageItem>(`/api/images/${id}/items/${imageId}/info`, { method: "PUT", body: JSON.stringify(info) }),
+  putImageSuggestion: (id: string, imageId: string, rest: ImageSuggestion | null) =>
+    request<ImageItem>(`/api/images/${id}/items/${imageId}/suggestion`, {
+      method: "PUT",
+      body: JSON.stringify(rest ?? {}),
+    }),
+  describeImage: (id: string, imageId: string) =>
+    request<ImageItem>(`/api/images/${id}/items/${imageId}/describe`, { method: "POST" }),
+  imageCdif: (id: string, imageId: string) => request<JsonLdDoc>(`/api/images/${id}/items/${imageId}/cdif`),
+  checkImages: (id: string) => request<ImageCheck[]>(`/api/images/${id}/check`, { method: "POST" }),
+  /** A file of the API as a blob: pictures and the zip need the API key header too. */
+  async blob(url: string): Promise<{ blob: Blob; filename: string }> {
+    const headers = new Headers();
+    if (apiKey) headers.set("X-API-Key", apiKey);
+    const res = await fetch(url, { headers });
+    if (!res.ok) throw new ApiError(res.status, (await res.json().catch(() => ({}))).detail ?? res.statusText);
+    const m = /filename="?([^";]+)"?/.exec(res.headers.get("Content-Disposition") ?? "");
+    return { blob: await res.blob(), filename: m ? m[1] : "download" };
+  },
+
   async qleverDocument(uuid: string, format: QleverFormat = "jsonld"): Promise<{ text: string; blob: Blob; filename: string }> {
     const headers = new Headers();
     if (apiKey) headers.set("X-API-Key", apiKey);
@@ -137,3 +167,17 @@ export const api = {
     return { text: await blob.text(), blob, filename: m ? m[1] : uuid };
   },
 };
+
+/** The images, with each file's last-modified day (local time) as a default date. */
+function imageForm(files: File[]): FormData {
+  const fd = new FormData();
+  const day = (ms: number) => {
+    const d = new Date(ms);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  };
+  files.forEach((f) => {
+    fd.append("files", f);
+    fd.append("last_modified", f.lastModified ? day(f.lastModified) : "");
+  });
+  return fd;
+}

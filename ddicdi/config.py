@@ -108,6 +108,10 @@ class Settings(BaseSettings):
     n8n_function_url: str = ""
     # Level of measurement (nominal / ordinal / scale) workflow, n8n id tuRgtz0JyOeUYr9i.
     n8n_measure_url: str = ""
+    # Image description (title, description, keywords) from a vision model, workflow
+    # metadata-image-description, n8n id 2FVWG3wVqn7oAaSs. It takes one image as the
+    # multipart field ``image`` and saves no executions, so n8n keeps no copy.
+    n8n_image_url: str = ""
     n8n_bearer_key: str = ""
     n8n_timeout: float = 120.0
     n8n_concurrency: int = 5
@@ -164,6 +168,17 @@ class Settings(BaseSettings):
     max_meta_bytes: int = 64 * 1024**2
     shacl_timeout: float = 120.0
     shacl_max_triples: int = 500_000
+
+    # Image collections (CDIF for images). An upload is at most ``max_image_bytes`` and
+    # ``max_image_pixels`` (checked before decoding, against decompression bombs); a
+    # collection holds at most ``max_images``. Only a preview (long side
+    # ``image_preview_side``, also what the vision model gets) and a thumbnail
+    # (``image_thumb_side``) are kept, as JPEG; the uploaded file itself is not stored.
+    max_image_bytes: int = 20 * 1024**2
+    max_image_pixels: int = 100_000_000
+    max_images: int = 50
+    image_preview_side: int = 1568
+    image_thumb_side: int = 320
 
 
 settings = Settings()

@@ -14,6 +14,8 @@ from fastapi.staticfiles import StaticFiles
 
 from .. import __version__
 from ..config import settings
+from ..images.collection import ImageStore
+from .image_routes import router as image_router
 from .routes import router
 from .store import UploadStore
 
@@ -53,7 +55,9 @@ def create_app(frontend_dist: Path | None = None) -> FastAPI:
         expose_headers=["Content-Disposition"],
     )
     app.state.store = UploadStore(settings.work_dir, settings.upload_ttl_seconds)
+    app.state.images = ImageStore(settings.work_dir)
     app.include_router(router)
+    app.include_router(image_router)
 
     @app.get("/favicon.ico", include_in_schema=False)
     def favicon() -> Response:

@@ -141,6 +141,10 @@ qlever start
 
 This does not work once `qlever rebuild-index` has folded the saves into the index; then rebuild from the seed with `qlever index`. On the shared Azure instance, "Reset Updates" in the QLever UI has the same effect for everyone: it removes every saved document.
 
+## Images → CDIF
+
+**Choose images** on the start screen (or drop image files on it) opens an image collection instead of a tabular file: JPEG, PNG, WebP or TIFF, at most 20 MB and 100 megapixels each, 50 per collection (`DDI_MAX_IMAGE_BYTES`, `DDI_MAX_IMAGE_PIXELS`, `DDI_MAX_IMAGES`). Every image becomes its own CDIF record: a `schema:Dataset` with `schema:additionalType` `schema:ImageObject`, the image as its `schema:DataDownload` (media type, size, MD5), conforming to CDIF core and discovery. The **Bundle** tab holds what the images share (licence, creators, publisher, dates, coverage, funding, extra keywords); an image inherits each bundle field it leaves empty, except title, description, identifiers and URLs, which are its own. On upload each image goes to the n8n workflow `metadata-image-description` (`DDI_N8N_IMAGE_URL`, the same `DDI_N8N_BEARER_KEY` as the variable enrichment), which asks `gpt-5.6-terra` for a title, description and keywords; the answer waits as a suggestion until it is accepted or rejected. Only a JPEG preview (long side 1568 px, no EXIF) and a thumbnail are stored, in the work directory with the same expiry as uploads; the preview is what the model sees, and the workflow saves no executions. **Check** validates every record against the CDIF SHACL shapes; **Download** gives a zip with one `<image>.cdif.jsonld` per image. The endpoints are under `/api/images` (see `/docs`); the code is in `ddicdi/images/` and `ddicdi/api/image_routes.py`.
+
 ## Further reading
 
 - `ddicdi/config.py`: all settings and their defaults.

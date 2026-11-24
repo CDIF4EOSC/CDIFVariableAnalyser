@@ -386,3 +386,48 @@ export interface QleverDocument {
 }
 
 export type QleverFormat = "jsonld" | "turtle";
+
+// -- image collections (CDIF for images) ----------------------------------------------
+
+/** What the vision model proposed and the user has not yet accepted or rejected. */
+export interface ImageSuggestion {
+  title: string;
+  description: string;
+  keywords: string[];
+}
+
+export type ImageAiStatus = "pending" | "running" | "done" | "failed";
+
+export interface ImageItem {
+  id: string;
+  filename: string;
+  mime: string;
+  width: number;
+  height: number;
+  size: number;
+  md5: string;
+  /** The image's own fields; empty ones inherit from the bundle. */
+  info: DatasetInfo;
+  /** What the CDIF is written from: own fields plus the bundle. */
+  effective: DatasetInfo;
+  ai_status: ImageAiStatus;
+  ai_error: string;
+  suggestion: ImageSuggestion | null;
+  thumb_url: string;
+  preview_url: string;
+}
+
+export interface ImageCollection {
+  id: string;
+  bundle: DatasetInfo;
+  images: ImageItem[];
+  rejected: { filename: string; reason: string }[];
+  max_images: number;
+  ai_configured: boolean;
+}
+
+export interface ImageCheck {
+  id: string;
+  filename: string;
+  shacl: ShaclResult;
+}

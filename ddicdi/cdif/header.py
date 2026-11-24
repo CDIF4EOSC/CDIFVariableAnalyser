@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 
 from .. import vocabularies as cv
-from ..models import Agent, DatasetMeta, Grant
+from ..models import Agent, DatasetInfo, DatasetMeta, Grant
 
 _ORCID_RE = re.compile(r"^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$")  # 0000-0002-1825-0097
 _ROR_RE = re.compile(r"^0[a-z0-9]{6}\d{2}$")  # 05xg72x27
@@ -106,12 +106,16 @@ def grant_node(grant: Grant) -> dict:
 def dataset_header(meta: DatasetMeta) -> dict:
     """Header entries for ``convert_document``: the editor's dataset description and the
     size and checksum of the uploaded file. Only what is known is written."""
-    info = meta.info
+    return info_header(meta.info, meta.file_size, meta.file_md5)
+
+
+def info_header(info: DatasetInfo, file_size: int | None = None, file_md5: str | None = None) -> dict:
+    """``dataset_header`` for a description that is not a tabular upload's (an image)."""
     header: dict = {}
-    if meta.file_size is not None:
-        header["schema:contentSize"] = meta.file_size
-    if meta.file_md5:
-        header["schema:checksum"] = {"schema:algorithm": "md5", "schema:checksumValue": meta.file_md5}
+    if file_size is not None:
+        header["schema:contentSize"] = file_size
+    if file_md5:
+        header["schema:checksum"] = {"schema:algorithm": "md5", "schema:checksumValue": file_md5}
     if info.record_id:
         header["@id"] = info.record_id
     for key, val in (

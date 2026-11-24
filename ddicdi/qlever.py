@@ -134,10 +134,15 @@ def to_turtle(graph: Graph) -> str:
 
 # Vendored with the app (Apache-2.0, see shapes/README.md), so the image has them too.
 VENDORED_SHAPES = Path(__file__).resolve().parent / "cdif" / "shapes" / "CDIF-Complete-Shapes.ttl"
+# Image records declare only core + discovery, so they are checked at that level: the
+# Complete shapes would warn about profiles (provenance, variables...) an image has not.
+DISCOVERY_SHAPES = VENDORED_SHAPES.with_name("CDIF-Discovery-Shapes.ttl")
 
 
-def _shapes_file() -> Path | None:
-    shapes = Path(settings.cdif_shacl_shapes) if settings.cdif_shacl_shapes else VENDORED_SHAPES
+def _shapes_file(shapes: Path | None = None) -> Path | None:
+    """``shapes`` when given; otherwise ``DDI_CDIF_SHACL_SHAPES`` or the vendored Complete."""
+    if shapes is None:
+        shapes = Path(settings.cdif_shacl_shapes) if settings.cdif_shacl_shapes else VENDORED_SHAPES
     return shapes if shapes.is_file() else None
 
 
@@ -155,17 +160,20 @@ def missing_required(info: DatasetInfo, datafile: str) -> list[str]:
     return problems
 
 
-def shacl_check(graph: Graph, max_messages: int = 50) -> dict:
+def shacl_check(graph: Graph, max_messages: int = 50, shapes: Path | None = None) -> dict:
     """Validate against the CDIF SHACL shapes, when they and pyshacl are available.
 
     The result never stops a save: ``checked`` says whether validation ran at all. A
     graph over ``settings.shacl_max_triples`` is not checked, and validation runs in a
     child process that is stopped after ``settings.shacl_timeout`` seconds (security
     #10): pyshacl cannot be interrupted, and a thread would hold the GIL meanwhile.
+    ``shapes`` picks a shapes file (images: ``DISCOVERY_SHAPES``); default Complete.
     """
-    shapes = _shapes_file()
+    wanted = shapes
+    shapes = _shapes_file(wanted)
     if shapes is None:
-        return _not_checked(f"CDIF SHACL shapes not found ({settings.cdif_shacl_shapes or VENDORED_SHAPES.name})")
+        name = wanted.name if wanted else (settings.cdif_shacl_shapes or VENDORED_SHAPES.name)
+        return _not_checked(f"CDIF SHACL shapes not found ({name})")
     try:
         import pyshacl  # noqa: F401
     except ImportError:
