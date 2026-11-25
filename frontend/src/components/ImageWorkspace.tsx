@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
-import type { DatasetInfo, ImageCheck, ImageCollection, ImageItem, ImageSuggestion, JsonLdDoc, Vocabularies } from "../types";
+import type { DatasetInfo, ImageCheck, ImageCollection, ImageItem, CollectionSaveResult, ImageSuggestion, JsonLdDoc, Vocabularies } from "../types";
 import { DatasetPanel, KeywordInput, SharedFields, checklist, datesInvalid } from "./DatasetPanel";
 import { IconCode, IconDownload, IconLogo, IconPlus, IconSpinner, IconX } from "./Icons";
 
@@ -11,6 +11,8 @@ interface Props {
   onClose: () => void;
   onApiDocs: () => void;
   onToast: (text: string, kind?: "info" | "err") => void;
+  /** Given when QLever is configured: the saved documents (Import). */
+  onQlever?: () => void;
 }
 
 const AI_CONCURRENCY = 3;
@@ -49,13 +51,15 @@ export function forgetPictures() {
   pictures.clear();
 }
 
-function Picture({ url, alt, className }: { url: string; alt: string; className?: string }) {
+function Picture({ url, alt, className, none }: { url: string; alt: string; className?: string; none?: boolean }) {
   const [src, setSrc] = useState<string | null>(null);
   useEffect(() => {
+    if (none) return;
     let live = true;
     picture(url).then((u) => live && setSrc(u)).catch(() => live && setSrc(null));
     return () => { live = false; };
-  }, [url]);
+  }, [url, none]);
+  if (none) return <div className={`${className ?? ""} pic-none`} aria-label={`${alt}: no picture`}><span>No picture · metadata from QLever</span></div>;
   return src ? <img src={src} alt={alt} className={className} /> : <div className={`${className ?? ""} pic-wait`} aria-label={alt} />;
 }
 
@@ -198,14 +202,14 @@ function ImageEditor({ collectionId, bundle, item, vocabularies, aiConfigured, o
       <div className="img-editor-head">
         <div className="col" style={{ gap: 2, minWidth: 0 }}>
           <strong className="ellipsis" title={item.filename}>{item.filename}</strong>
-          <span className="muted">{item.mime.replace("image/", "").toUpperCase()} · {item.width}×{item.height} · {formatBytes(item.size)}</span>
+          <span className="muted">{item.mime.replace("image/", "").toUpperCase()}{item.width > 0 && <> · {item.width}×{item.height}</>} · {formatBytes(item.size)}</span>
         </div>
         <span className="grow" />
         <button type="button" className="btn sm" onClick={onCdif} title="Show the CDIF of this image"><IconCode /> CDIF</button>
         <button type="button" className="iconbtn" title="Remove this image" aria-label="Remove image" onClick={onRemove}><IconX /></button>
       </div>
       <div className="img-editor-body">
-        <div className="img-preview"><Picture url={item.preview_url} alt={item.info.title || item.filename} /></div>
+        <div className="img-preview"><Picture url={item.preview_url} alt={item.info.title || item.filename} none={!item.has_picture} /></div>
 
         {item.ai_status === "running" && (
           <div className="ai-box running"><IconSpinner size={16} /> Describing the image…</div>
@@ -275,7 +279,7 @@ function ImageEditor({ collectionId, bundle, item, vocabularies, aiConfigured, o
         </div>
       </div>
       <div className="img-editor-foot">
-        {aiConfigured && item.ai_status !== "running" && (
+        {aiConfigured && item.has_picture && item.ai_status !== "running" && (
           <button type="button" className="btn sm ghost" onClick={onDescribe} title="Ask the model again">✦ Describe again</button>
         )}
         <span className="grow" />
@@ -284,6 +288,51 @@ function ImageEditor({ collectionId, bundle, item, vocabularies, aiConfigured, o
         <button type="button" className="btn primary" disabled={!dirty || busy || invalid} onClick={() => void save()}>{busy ? "Saving…" : "Save"}</button>
       </div>
     </section>
+  );
+}
+
+/** What a Save to QLever stored: one document per image, with its SHACL result. */
+function SaveModal({ saved, onPick, onClose, onQlever }: { saved: CollectionSaveResult | null; onPick: (id: string) => void; onClose: () => void; onQlever?: () => void }) {
+  const results = saved?.images ?? null;
+  const failed = results?.filter((r) => !r.saved) ?? [];
+  return (
+    <div className="scrim center" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="modal" role="dialog" aria-label="Saved to QLever">
+        <div className="drawer-head">
+          <div className="col" style={{ gap: 4, flexGrow: 1 }}>
+            <span className="eyebrow">QLever store · {saved ? saved.title : "image collection"}</span>
+            <h2 style={{ color: !results ? undefined : failed.length ? "#b91c1c" : "#15803d" }}>
+              {!results ? "Saving…" : failed.length ? `${failed.length} of ${results.length} images not saved` : `Saved ${results.length} image${results.length === 1 ? "" : "s"}`}
+            </h2>
+            <p>The collection is saved as a whole (Import opens it again with its bundle), and each image's CDIF as its own graph (<span className="mono">urn:uuid:…</span>). Saving again replaces them. Edits not yet saved in the editor are not included.</p>
+          </div>
+          <button type="button" className="btn" style={{ width: 32, padding: 0, justifyContent: "center" }} aria-label="Close" onClick={onClose}><IconX /></button>
+        </div>
+        <div className="drawer-body">
+          {!results ? <IconSpinner size={18} /> : (
+            <table>
+              <thead><tr><th>Image</th><th>Graph</th><th>CDIF SHACL (Discovery)</th></tr></thead>
+              <tbody>
+                {results.map((r) => (
+                  <tr key={r.id}>
+                    <td><button type="button" className="linklike" onClick={() => onPick(r.id)}>{r.filename}</button></td>
+                    <td className="mono" style={{ fontSize: 11 }}>{r.graph}</td>
+                    <td>
+                      {!r.saved ? <span style={{ color: "#b91c1c" }}>Not saved: {r.error}</span>
+                        : !r.shacl?.checked ? `not checked: ${r.shacl?.reason ?? "unavailable"}`
+                        : r.shacl.violation_count === 0 ? `no violations${r.shacl.warnings ? ` · ${r.shacl.warnings} warning${r.shacl.warnings === 1 ? "" : "s"}` : ""}`
+                        : `${r.shacl.violation_count} violation${r.shacl.violation_count === 1 ? "" : "s"} (saved anyway)`}
+                      {r.shacl && r.shacl.missing_required.length > 0 && <div className="muted" style={{ fontSize: 11 }}>{r.shacl.missing_required.join("; ")}</div>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          {results && onQlever && <div className="row"><span className="grow" /><button type="button" className="btn" onClick={onQlever}>Show saved documents</button></div>}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -345,12 +394,13 @@ function CdifModal({ doc, filename, onClose }: { doc: JsonLdDoc | null; filename
   );
 }
 
-export function ImageWorkspace({ collection, vocabularies, onChange, onClose, onApiDocs, onToast }: Props) {
+export function ImageWorkspace({ collection, vocabularies, onChange, onClose, onApiDocs, onToast, onQlever }: Props) {
   const [view, setView] = useState<"images" | "bundle">("images");
   const [selected, setSelected] = useState<string | null>(collection.images[0]?.id ?? null);
   const [adding, setAdding] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [check, setCheck] = useState<ImageCheck[] | null | undefined>(undefined);
+  const [saved, setSaved] = useState<CollectionSaveResult | null | undefined>(undefined);
   const [cdif, setCdif] = useState<{ doc: JsonLdDoc | null; filename: string } | null>(null);
   const latest = useRef(collection);
   latest.current = collection;
@@ -449,6 +499,15 @@ export function ImageWorkspace({ collection, vocabularies, onChange, onClose, on
       onToast((e as Error).message, "err");
     }
   };
+  const saveToQlever = async () => {
+    setSaved(null);
+    try {
+      setSaved(await api.saveImagesToQlever(collection.id));
+    } catch (e) {
+      setSaved(undefined);
+      onToast((e as Error).message, "err");
+    }
+  };
   const showCdif = async (item: ImageItem) => {
     setCdif({ doc: null, filename: item.filename });
     try {
@@ -499,6 +558,15 @@ export function ImageWorkspace({ collection, vocabularies, onChange, onClose, on
         <button type="button" className="hbtn primary" disabled={downloading} title="Download a zip with one CDIF file per image" onClick={() => void download()}>
           <IconDownload /> {downloading ? "Preparing…" : <>Download<span className="wide-only"> CDIF zip</span></>}
         </button>
+        {onQlever && (
+          <div className="fmt-switch qlever-group" role="group" aria-label="QLever store">
+            <span className="group-label wide-only">QLever</span>
+            <button type="button" aria-label="Save to QLever" disabled={saved === null} title="Save to QLever: the whole collection, each image's CDIF as its own document (a re-save replaces them)" onClick={() => void saveToQlever()}>
+              {saved === null ? "Saving…" : "Save"}
+            </button>
+            <button type="button" aria-label="Import from QLever" title="Import from QLever: open a saved image (or data file) for editing" onClick={onQlever}>Import</button>
+          </div>
+        )}
         <button type="button" className="hbtn" title="API documentation" aria-label="API documentation" onClick={onApiDocs}><IconCode /><span className="wide-only"> API</span></button>
       </header>
 
@@ -536,7 +604,7 @@ export function ImageWorkspace({ collection, vocabularies, onChange, onClose, on
                       return (
                         <li key={i.id}>
                           <button type="button" className={`img-tile ${i.id === selected ? "on" : ""}`} aria-pressed={i.id === selected} onClick={() => setSelected(i.id)}>
-                            <Picture url={i.thumb_url} alt={i.filename} className="img-thumb" />
+                            <Picture url={i.thumb_url} alt={i.filename} className="img-thumb" none={!i.has_picture} />
                             <span className={`img-dot ${st}`} title={STATUS_TEXT[st]} aria-label={STATUS_TEXT[st]}>
                               {st === "running" ? <IconSpinner size={10} /> : st === "review" ? "✦" : null}
                             </span>
@@ -578,6 +646,7 @@ export function ImageWorkspace({ collection, vocabularies, onChange, onClose, on
           )}
         </div>
       </div>
+      {saved !== undefined && <SaveModal saved={saved} onPick={(id) => { setSelected(id); setView("images"); setSaved(undefined); }} onClose={() => setSaved(undefined)} onQlever={onQlever && (() => { setSaved(undefined); onQlever(); })} />}
       {check !== undefined && <CheckModal results={check} onPick={(id) => { setSelected(id); setView("images"); setCheck(undefined); }} onClose={() => setCheck(undefined)} />}
       {cdif && <CdifModal doc={cdif.doc} filename={cdif.filename} onClose={() => setCdif(null)} />}
     </div>

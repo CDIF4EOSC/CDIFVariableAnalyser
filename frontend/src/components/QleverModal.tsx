@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, ApiError } from "../api";
 import type { QleverDocument, QleverFormat, QleverSaveResult } from "../types";
 import { IconDownload, IconX } from "./Icons";
@@ -67,6 +67,12 @@ export function QleverModal({ saved, onClose, onToast, onOpen }: Props) {
     api.qleverDocuments().then(setDocs).catch((e) => setError(e instanceof ApiError ? e.message : String(e)));
   }, []);
   useEffect(load, [load]);
+  // The images of a saved collection open with it: list the collection, not each image.
+  const shown = useMemo(() => {
+    if (!docs) return null;
+    const inCollection = new Set(docs.flatMap((d) => (d.kind === "image-collection" ? d.parts ?? [] : [])));
+    return docs.filter((d) => !inCollection.has(d.uuid));
+  }, [docs]);
 
   const open = async (doc: QleverDocument, format: QleverFormat, download: boolean) => {
     setBusy(`${doc.uuid}|${format}|${download}`);
@@ -123,15 +129,15 @@ export function QleverModal({ saved, onClose, onToast, onOpen }: Props) {
               {saved && <SaveSummary saved={saved} />}
               {error && <p className="error" style={{ margin: 0, color: "#b91c1c" }}>{error}</p>}
               {!docs && !error && <p className="muted" style={{ margin: 0 }}>Loading…</p>}
-              {docs && docs.length === 0 && <p className="muted" style={{ margin: 0 }}>Nothing saved yet.</p>}
-              {docs && docs.length > 0 && (
+              {shown && shown.length === 0 && <p className="muted" style={{ margin: 0 }}>Nothing saved yet.</p>}
+              {shown && shown.length > 0 && (
                 <table>
                   <thead><tr><th>Title</th><th>Source file</th><th>Saved</th><th>Triples</th><th /></tr></thead>
                   <tbody>
-                    {docs.map((d) => (
+                    {shown.map((d) => (
                       <tr key={d.uuid} style={saved?.uuid === d.uuid ? { background: "var(--accent-soft)" } : undefined}>
                         <td>
-                          <div>{d.title || <span className="muted">untitled</span>}</div>
+                          <div>{d.kind === "image" && <span className="kind-badge">Image</span>}{d.kind === "image-collection" && <span className="kind-badge">Image collection</span>}{d.title || <span className="muted">untitled</span>}</div>
                           <div className="mono muted" style={{ fontSize: 11 }} title="Dataset IRI">{d.dataset_iri}</div>
                         </td>
                         <td>{d.source_file}</td>
@@ -141,9 +147,11 @@ export function QleverModal({ saved, onClose, onToast, onOpen }: Props) {
                           <button type="button" className="btn primary" disabled={busy !== null} title="Open in the editor: the metadata comes back, the data rows do not" onClick={() => { setBusy(`${d.uuid}|open`); void onOpen(d).finally(() => setBusy(null)); }}>
                             {busy === `${d.uuid}|open` ? "Opening…" : "Open"}
                           </button>{" "}
-                          <button type="button" className="btn" disabled={busy !== null} onClick={() => void open(d, "jsonld", false)}>View</button>{" "}
-                          <button type="button" className="btn" disabled={busy !== null} title="Download CDIF JSON-LD" onClick={() => void open(d, "jsonld", true)}><IconDownload /> JSON-LD</button>{" "}
-                          <button type="button" className="btn" disabled={busy !== null} title="Download Turtle" onClick={() => void open(d, "turtle", true)}><IconDownload /> Turtle</button>
+                          {d.kind !== "image-collection" && <>
+                            <button type="button" className="btn" disabled={busy !== null} onClick={() => void open(d, "jsonld", false)}>View</button>{" "}
+                            <button type="button" className="btn" disabled={busy !== null} title="Download CDIF JSON-LD" onClick={() => void open(d, "jsonld", true)}><IconDownload /> JSON-LD</button>{" "}
+                            <button type="button" className="btn" disabled={busy !== null} title="Download Turtle" onClick={() => void open(d, "turtle", true)}><IconDownload /> Turtle</button>
+                          </>}
                         </td>
                       </tr>
                     ))}

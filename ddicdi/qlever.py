@@ -33,7 +33,7 @@ import uuid as uuidlib
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeout
 from concurrent.futures.process import BrokenProcessPool
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -54,6 +54,9 @@ DCAT = Namespace("http://www.w3.org/ns/dcat#")
 DCT = Namespace("http://purl.org/dc/terms/")
 FOAF = Namespace("http://xmlns.com/foaf/0.1/")
 VOID = Namespace("http://rdfs.org/ns/void#")
+# The bundle defaults of a saved image collection, as JSON: app state, not CDIF.
+STUDIO_BUNDLE = URIRef("urn:cdi-studio:bundle")
+IMAGE_COLLECTION = "image-collection"
 
 # The context of the converter's output, for JSON-LD read back from the store.
 CDIF_CONTEXT: dict[str, str] = dict(CDI_CTX, spdx="http://spdx.org/rdf/terms#", xsd=str(XSD))
@@ -376,6 +379,12 @@ class CatalogEntry:
     triples: int
     saved_at: str
     saved_by: str = ""
+    kind: str = ""  # "image", "image-collection"; empty for a data file's document
+    # An image collection: the UUIDs of its images (each saved as its own document) and
+    # its bundle defaults as JSON. The collection lives only in this catalog, not in
+    # the CDIF: how CDIF relates images to a collection or study is still open.
+    parts: list[str] = field(default_factory=list)
+    bundle: str = ""
 
     @property
     def graph(self) -> str:
@@ -389,12 +398,19 @@ def _entry_graph(entry: CatalogEntry) -> Graph:
     g.add((e, RDF.type, DCAT.CatalogRecord))
     g.add((e, DCT.identifier, Literal(entry.uuid)))
     g.add((e, DCT.title, Literal(entry.title)))
-    g.add((e, FOAF.primaryTopic, URIRef(entry.dataset_iri)))
+    if entry.dataset_iri:
+        g.add((e, FOAF.primaryTopic, URIRef(entry.dataset_iri)))
     g.add((e, DCT.source, Literal(entry.source_file)))
     g.add((e, DCT.modified, Literal(entry.saved_at, datatype=XSD.dateTime)))
     g.add((e, VOID.triples, Literal(entry.triples)))
     if entry.saved_by:
         g.add((e, DCT.creator, Literal(entry.saved_by)))
+    if entry.kind:
+        g.add((e, DCT.type, Literal(entry.kind)))
+    for part in entry.parts:
+        g.add((e, DCT.hasPart, Literal(part)))
+    if entry.bundle:
+        g.add((e, STUDIO_BUNDLE, Literal(entry.bundle)))
     return g
 
 
@@ -411,12 +427,13 @@ async def write_catalog_entry(entry: CatalogEntry) -> None:
 async def list_catalog() -> list[dict[str, Any]]:
     rows = await select(
         f"""PREFIX dct: <{DCT}> PREFIX dcat: <{DCAT}> PREFIX foaf: <{FOAF}> PREFIX void: <{VOID}>
-SELECT ?uuid ?title ?dataset ?source ?modified ?creator ?triples WHERE {{
+SELECT ?uuid ?title ?dataset ?source ?modified ?creator ?triples ?kind WHERE {{
   GRAPH <{CATALOG}> {{
     <{CATALOG}> dcat:record ?e . ?e dct:identifier ?uuid .
     OPTIONAL {{ ?e dct:title ?title }} OPTIONAL {{ ?e foaf:primaryTopic ?dataset }}
     OPTIONAL {{ ?e dct:source ?source }} OPTIONAL {{ ?e dct:modified ?modified }}
     OPTIONAL {{ ?e dct:creator ?creator }} OPTIONAL {{ ?e void:triples ?triples }}
+    OPTIONAL {{ ?e dct:type ?kind }}
   }}
 }} ORDER BY DESC(?modified)"""
     )
@@ -428,8 +445,15 @@ SELECT ?uuid ?title ?dataset ?source ?modified ?creator ?triples WHERE {{
         v = val(row, key)
         return int(float(v)) if v is not None else None
 
+    parts: dict[str, list[str]] = {}
+    for r in await select(
+        f"""PREFIX dct: <{DCT}>
+SELECT ?uuid ?part WHERE {{ GRAPH <{CATALOG}> {{ ?e dct:identifier ?uuid ; dct:hasPart ?part }} }}"""
+    ):
+        parts.setdefault(val(r, "uuid") or "", []).append(val(r, "part") or "")
     return [
         {
+            "parts": sorted(parts.get(val(r, "uuid") or "", [])),
             "uuid": val(r, "uuid"),
             "graph": graph_iri(val(r, "uuid") or ""),
             "title": val(r, "title") or "",
@@ -438,9 +462,32 @@ SELECT ?uuid ?title ?dataset ?source ?modified ?creator ?triples WHERE {{
             "saved_at": val(r, "modified"),
             "saved_by": val(r, "creator"),
             "triples": num(r, "triples"),
+            "kind": val(r, "kind") or "dataset",
         }
         for r in rows
     ]
+
+
+async def collection_entry(doc_uuid: str) -> dict[str, Any] | None:
+    """The saved image collection ``doc_uuid``: its title, image UUIDs and bundle JSON;
+    None when the catalog has no collection by that UUID."""
+    e = entry_iri(doc_uuid)
+    rows = await select(
+        f"""PREFIX dct: <{DCT}>
+SELECT ?title ?part ?bundle WHERE {{ GRAPH <{CATALOG}> {{
+  <{e}> dct:type "{IMAGE_COLLECTION}" .
+  OPTIONAL {{ <{e}> dct:title ?title }} OPTIONAL {{ <{e}> dct:hasPart ?part }}
+  OPTIONAL {{ <{e}> <{STUDIO_BUNDLE}> ?bundle }}
+}} }}"""
+    )
+    if not rows:
+        return None
+    first = rows[0]
+    return {
+        "title": first.get("title", {}).get("value", ""),
+        "bundle": first.get("bundle", {}).get("value", ""),
+        "parts": sorted({r["part"]["value"] for r in rows if "part" in r}),
+    }
 
 
 def now_iso() -> str:

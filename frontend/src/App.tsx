@@ -319,6 +319,31 @@ export default function App() {
 
   /** Open a document saved in QLever as a metadata-only session, in place of the open file. */
   const openFromQlever = async (doc: QleverDocument) => {
+    if (doc.kind === "image" || doc.kind === "image-collection") {
+      const open = info ? info.filename : images ? "the image collection" : null;
+      if (open && !confirm(`Open ${doc.kind === "image" ? "the image" : "the image collection"} "${doc.title || doc.uuid}" from QLever? ${open} is closed; edits not saved to QLever are lost.`)) return;
+      try {
+        const c = await api.openImageFromQlever(doc.uuid);
+        if (info) {
+          api.remove(info.file_id).catch(() => undefined);
+          resetFileState();
+          setInfo(null);
+        }
+        if (images) void api.removeImages(images.id).catch(() => undefined);
+        forgetPictures();
+        setUploadError(null);
+        setImages(c);
+        setQleverOpen(false);
+        setQleverSaved(null);
+        c.rejected.forEach((r) => toast(`${r.filename}: ${r.reason}`, "err"));
+        toast(`Opened ${doc.title || doc.uuid} from QLever (metadata only, no pictures)`);
+      } catch (e) {
+        fail(e);
+      }
+      return;
+    }
+    if (images && !confirm(`Open "${doc.title || doc.uuid}" from QLever? The image collection is closed; edits not saved to QLever are lost.`)) return;
+    if (images) closeImages();
     if (info && !confirm(`Open "${doc.title || doc.uuid}" from QLever? The file you have open now (${info.filename}) is closed; edits not saved to QLever are lost.`)) return;
     try {
       const i = await api.openQlever(doc.uuid);
@@ -801,8 +826,10 @@ export default function App() {
           onClose={closeImages}
           onApiDocs={() => setApiDocs(true)}
           onToast={toast}
+          onQlever={apiInfo?.qlever === true ? () => { setQleverSaved(null); setQleverOpen(true); } : undefined}
         />
         {apiDocs && <ApiDocsModal apiInfo={apiInfo} onClose={() => setApiDocs(false)} />}
+        {qleverOpen && <QleverModal saved={null} onClose={() => setQleverOpen(false)} onToast={toast} onOpen={openFromQlever} />}
         <Toasts items={toasts} />
       </>
     );

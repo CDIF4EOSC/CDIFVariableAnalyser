@@ -1,4 +1,4 @@
-import type { CategoryStats, DatasetInfo, EnrichKind, EnrichResponse, FileInfo, ImageCheck, ImageCollection, ImageItem, ImageSuggestion, JsonLdDoc, OutputBody, OutputFormat, PreviewPage, QleverDocument, QleverFormat, QleverSaveResult, ShaclResult, Statistics, Variable } from "./types";
+import type { CategoryStats, DatasetInfo, EnrichKind, EnrichResponse, FileInfo, ImageCheck, ImageCollection, ImageItem, CollectionSaveResult, ImageSuggestion, JsonLdDoc, OutputBody, OutputFormat, PreviewPage, QleverDocument, QleverFormat, QleverSaveResult, ShaclResult, Statistics, Variable } from "./types";
 
 let apiKey = "";
 export function setApiKey(key: string) {
@@ -133,6 +133,8 @@ export const api = {
   removeImages: (id: string) => request<void>(`/api/images/${id}`, { method: "DELETE" }),
   removeImage: (id: string, imageId: string) =>
     request<ImageCollection>(`/api/images/${id}/items/${imageId}`, { method: "DELETE" }),
+  saveImagesToQlever: (id: string) => request<CollectionSaveResult>(`/api/images/${id}/qlever`, { method: "POST" }),
+  openImageFromQlever: (uuid: string) => request<ImageCollection>(`/api/images/from-qlever/${uuid}`, { method: "POST" }),
   putBundle: (id: string, bundle: DatasetInfo) =>
     request<ImageCollection>(`/api/images/${id}/bundle`, { method: "PUT", body: JSON.stringify(bundle) }),
   putImageInfo: (id: string, imageId: string, info: DatasetInfo) =>

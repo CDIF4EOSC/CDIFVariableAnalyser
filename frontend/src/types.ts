@@ -383,6 +383,10 @@ export interface QleverDocument {
   saved_at: string | null;
   saved_by: string | null;
   triples: number | null;
+  /** "image", "image-collection" (opens as an image collection) or "dataset". */
+  kind: string;
+  /** An image collection: the UUIDs of its images. */
+  parts: string[];
 }
 
 export type QleverFormat = "jsonld" | "turtle";
@@ -415,6 +419,30 @@ export interface ImageItem {
   suggestion: ImageSuggestion | null;
   thumb_url: string;
   preview_url: string;
+  /** False for an image opened from QLever: metadata only, no picture. */
+  has_picture: boolean;
+}
+
+/** A collection saved to QLever: its catalog entry, and each image as its own document. */
+export interface CollectionSaveResult {
+  uuid: string;
+  title: string;
+  saved_at: string;
+  images: ImageSaveResult[];
+}
+
+/** One image saved to QLever as its own document, or why it was not. */
+export interface ImageSaveResult {
+  id: string;
+  filename: string;
+  uuid: string;
+  graph: string;
+  dataset_iri: string;
+  saved: boolean;
+  error: string;
+  triples: number;
+  saved_at: string;
+  shacl: ShaclResult | null;
 }
 
 export interface ImageCollection {

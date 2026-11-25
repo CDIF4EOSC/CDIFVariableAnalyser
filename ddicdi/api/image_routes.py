@@ -9,7 +9,9 @@ file per image.
 from __future__ import annotations
 
 import io
+import uuid
 import zipfile
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
@@ -21,7 +23,8 @@ from .. import qlever
 from ..config import settings
 from ..enrich import EnrichError, NotConfigured
 from ..images import describe as ai
-from ..images.cdif import cdif_filename, dumps, image_cdif
+from ..cdif.reverse import NotADocument
+from ..images.cdif import cdif_filename, dumps, image_cdif, image_from_graph
 from ..images.collection import (
     CollectionFull,
     CollectionNotFound,
@@ -31,10 +34,12 @@ from ..images.collection import (
     StorageFull,
     Suggestion,
     effective_info,
+    split_inherited,
 )
+from ..models import DatasetInfo
 from ..images.media import ImageRejected, iso_day, process
 from . import admission
-from .routes import require_api_key
+from .routes import _qlever_call, require_api_key
 from .schemas import _LIST_MAX, _TEXT_MAX, _TITLE_MAX, DatasetInfoIO, ShaclOut, ShortStr
 
 router = APIRouter(prefix="/api/images", tags=["images"], dependencies=[Depends(require_api_key)])
@@ -68,6 +73,7 @@ class ImageOut(BaseModel):
     suggestion: SuggestionIO | None = None
     thumb_url: str
     preview_url: str
+    has_picture: bool = Field(True, description="false for an image opened from QLever: metadata only, no preview")
 
     @classmethod
     def build(cls, coll: ImageCollection, item: ImageItem) -> "ImageOut":
@@ -87,6 +93,7 @@ class ImageOut(BaseModel):
             suggestion=SuggestionIO(**item.suggestion.__dict__) if item.suggestion else None,
             thumb_url=f"{base}/thumb.jpg",
             preview_url=f"{base}/preview.jpg",
+            has_picture=item.has_picture,
         )
 
 
@@ -119,6 +126,30 @@ class ImageCheckOut(BaseModel):
     id: str
     filename: str
     shacl: ShaclOut
+
+
+class ImageSaveOut(BaseModel):
+    """One image saved to QLever as its own document, or why it was not."""
+
+    id: str
+    filename: str
+    uuid: str
+    graph: str
+    dataset_iri: str
+    saved: bool
+    error: str = ""
+    triples: int = 0
+    saved_at: str = ""
+    shacl: ShaclOut | None = None
+
+
+class CollectionSaveOut(BaseModel):
+    """A collection saved to QLever: its catalog entry, and each image as its own document."""
+
+    uuid: str
+    title: str
+    saved_at: str
+    images: list[ImageSaveOut]
 
 
 # -- helpers --------------------------------------------------------------------------
@@ -331,6 +362,8 @@ async def describe_image(collection_id: str, image_id: str, images: ImageStore =
 
     def start(coll: ImageCollection):
         item = _item(coll, image_id)
+        if not item.has_picture:
+            raise HTTPException(status_code=409, detail="This image was opened from QLever without its picture")
         item.ai_status, item.ai_error = "running", ""
         return item.filename
 
@@ -398,3 +431,157 @@ async def check_collection(collection_id: str, images: ImageStore = Depends(get_
         missing = qlever.missing_required(info, item.filename)
         out.append(ImageCheckOut(id=item.uid, filename=item.filename, shacl=ShaclOut(**shacl, missing_required=missing)))
     return out
+
+
+# -- QLever: one document (named graph) per image ---------------------------------------
+
+
+def _qlever_configured() -> None:
+    if not qlever.configured():
+        raise HTTPException(status_code=503, detail="QLever is not configured on this server (DDI_QLEVER_URL)")
+
+
+def collection_title(coll: ImageCollection) -> str:
+    """The collection's name (Bundle tab), or one made from its images' titles."""
+    if coll.bundle.title.strip():
+        return coll.bundle.title.strip()
+    titles = [i.info.title.strip() or Path(i.filename).stem for i in coll.images]
+    n = len(titles)
+    head = ", ".join(titles[:3]) + (", …" if n > 3 else "")
+    return f"{n} image{'' if n == 1 else 's'}: {head}"
+
+
+@router.post("/{collection_id}/qlever", response_model=CollectionSaveOut)
+async def save_collection_to_qlever(
+    collection_id: str, request: Request, images: ImageStore = Depends(get_images)
+) -> CollectionSaveOut:
+    """Save the collection to QLever. Each image's CDIF is its own document (graph
+    ``urn:uuid:<image UUID>``, catalog entry typed "image"); the collection is one more
+    catalog entry, typed "image-collection", listing its images and holding the bundle,
+    so the whole collection can be opened again. The collection is kept in the catalog
+    only, not in the CDIF: how CDIF relates images to a collection is still open.
+    A re-save replaces the same graphs and entries. SHACL (Discovery shapes) is reported,
+    not enforced; an image that cannot be saved is reported, the others are saved."""
+    _qlever_configured()
+    coll = await run_in_threadpool(_load, images, collection_id)
+    saved_by = request.headers.get("x-ms-client-principal-name", "")
+    out = []
+    for item in coll.images:
+        doc_uuid = item.doc_uuid
+        res = ImageSaveOut(id=item.uid, filename=item.filename, uuid=doc_uuid, graph=qlever.graph_iri(doc_uuid),
+                           dataset_iri=item.record_iri, saved=False)
+        if not qlever.is_absolute_iri(item.record_iri):
+            res.error = f"The record IRI {item.record_iri!r} is not an absolute IRI; fix or clear it"
+            out.append(res)
+            continue
+        cdif = image_cdif(coll, item)
+        graph = await run_in_threadpool(qlever.cdif_graph, cdif)
+        async with admission.validations.slot():
+            shacl = await run_in_threadpool(qlever.shacl_check, graph, shapes=qlever.DISCOVERY_SHAPES)
+        info = effective_info(coll.bundle, item)
+        info.title = item.info.title
+        res.shacl = ShaclOut(**shacl, missing_required=qlever.missing_required(info, item.filename))
+        entry = qlever.CatalogEntry(
+            uuid=doc_uuid,
+            title=str(cdif.get("schema:name") or item.filename),
+            dataset_iri=item.record_iri,
+            source_file=item.filename,
+            triples=len(graph),
+            saved_at=qlever.now_iso(),
+            saved_by=saved_by,
+            kind="image",
+        )
+        try:
+            await qlever.put_graph(entry.graph, graph)
+            await qlever.write_catalog_entry(entry)
+        except qlever.QleverError as exc:
+            if exc.status_code < 500:
+                raise _qlever_call(exc)
+            res.error = str(exc)
+            out.append(res)
+            continue
+        res.saved, res.triples, res.saved_at = True, entry.triples, entry.saved_at
+        out.append(res)
+
+    saved = [r for r in out if r.saved]
+    entry = qlever.CatalogEntry(
+        uuid=coll.doc_uuid,
+        title=collection_title(coll),
+        dataset_iri="",
+        source_file=f"{len(saved)} image{'' if len(saved) == 1 else 's'}",
+        triples=sum(r.triples for r in saved),
+        saved_at=qlever.now_iso(),
+        saved_by=saved_by,
+        kind=qlever.IMAGE_COLLECTION,
+        parts=[r.uuid for r in saved],
+        bundle=DatasetInfoIO.from_info(coll.bundle).model_dump_json(),
+    )
+    try:
+        await qlever.write_catalog_entry(entry)
+    except qlever.QleverError as exc:
+        raise _qlever_call(exc)
+    return CollectionSaveOut(uuid=entry.uuid, title=entry.title, saved_at=entry.saved_at, images=out)
+
+
+async def _read_image(doc_uuid: str) -> ImageItem | None:
+    """One saved image record, or None when QLever has no such graph."""
+    async with admission.qlever_reads.slot():
+        try:
+            graph = await qlever.construct_graph(qlever.graph_iri(doc_uuid))
+        except qlever.QleverError as exc:
+            raise _qlever_call(exc)
+    if not len(graph):
+        return None
+    try:
+        return await run_in_threadpool(image_from_graph, qlever.restore_numeric_types(graph), doc_uuid)
+    except NotADocument as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@router.post("/from-qlever/{doc_uuid}", response_model=CollectionOut, status_code=201)
+async def open_from_qlever(doc_uuid: str, images: ImageStore = Depends(get_images)) -> CollectionOut:
+    """Open a saved image collection, or a single saved image, for editing (metadata only:
+    no pictures, so no AI description).
+
+    A collection comes back whole: its bundle as saved, each image with what equals the
+    bundle inherited again, under the collection's own id, so the next save updates the
+    same collection. A single image comes back as a new collection of one, every field
+    its own. Images missing from QLever are listed in ``rejected``."""
+    _qlever_configured()
+    if not qlever.is_uuid(doc_uuid):
+        raise HTTPException(status_code=400, detail="Not a document UUID")
+    try:
+        found = await qlever.collection_entry(doc_uuid)
+    except qlever.QleverError as exc:
+        raise _qlever_call(exc)
+
+    if found is None:
+        item = await _read_image(doc_uuid)
+        if item is None:
+            raise HTTPException(status_code=404, detail=f"No document {doc_uuid} in QLever")
+        try:
+            coll = await run_in_threadpool(images.create_with, [item])
+        except StorageFull as exc:
+            raise HTTPException(status_code=507, detail=str(exc))
+        return CollectionOut.build(coll)
+
+    parts = [p for p in found["parts"] if qlever.is_uuid(p)]
+    if settings.max_images > 0 and len(parts) > settings.max_images:
+        raise HTTPException(status_code=413, detail=f"The collection has {len(parts)} images; at most {settings.max_images} open")
+    try:
+        bundle = DatasetInfoIO.model_validate_json(found["bundle"]).to_info() if found["bundle"] else DatasetInfo()
+    except ValueError:
+        bundle = DatasetInfo()
+    items, rejected = [], []
+    for part in parts:
+        item = await _read_image(part)
+        if item is None:
+            rejected.append(RejectedOut(filename=part, reason="this image is no longer in QLever"))
+            continue
+        item.info = split_inherited(bundle, item.info)
+        items.append(item)
+    try:
+        coll = await run_in_threadpool(images.create_with, items, uuid.UUID(doc_uuid).hex, bundle)
+    except StorageFull as exc:
+        raise HTTPException(status_code=507, detail=str(exc))
+    return CollectionOut.build(coll, rejected)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import uuid
 import zipfile
 
 import httpx
@@ -15,6 +16,7 @@ from ddicdi.api.main import create_app
 from ddicdi.config import settings
 from ddicdi.images import describe as ai
 from ddicdi.images.collection import ImageStore
+from ddicdi import qlever
 from ddicdi.images.media import ImageRejected, process
 from ddicdi.qlever import cdif_graph, shacl_check
 
@@ -120,7 +122,7 @@ def test_bundle_inheritance_and_cdif(client):
     assert doc["@type"] == ["schema:Dataset"]
     assert doc["schema:additionalType"] == [{"@id": "schema:ImageObject"}]
     assert doc["schema:name"] == "Village market"
-    assert doc["@id"] == f"urn:uuid:{img['id']}"
+    assert doc["@id"] == f"urn:uuid:{uuid.UUID(img['id'])}"  # canonical, as the QLever graph name
     dist = doc["schema:distribution"][0]
     assert dist["schema:encodingFormat"] == ["image/jpeg"]
     assert dist["schema:contentUrl"] == "https://example.org/m.jpg"
@@ -298,3 +300,163 @@ def test_image_type_follows_type(client):
     keys = list(doc)
     assert keys[keys.index("@type") + 1] == "schema:additionalType"
     assert doc["schema:additionalType"] == [{"@id": "schema:ImageObject"}]
+
+
+
+# -- QLever: one document per image ----------------------------------------------------
+
+
+class FakeQlever:
+    def __init__(self):
+        self.graphs, self.catalog = {}, {}
+
+    async def put_graph(self, name, graph):
+        self.graphs[name] = graph
+
+    async def write_catalog_entry(self, entry):
+        self.catalog[entry.uuid] = entry
+
+    async def construct_graph(self, name):
+        from rdflib import Graph
+
+        return self.graphs.get(name, Graph())
+
+    async def collection_entry(self, doc_uuid):
+        e = self.catalog.get(doc_uuid)
+        if e is None or e.kind != "image-collection":
+            return None
+        return {"title": e.title, "bundle": e.bundle, "parts": sorted(e.parts)}
+
+
+@pytest.fixture()
+def fake_qlever(monkeypatch):
+    store = FakeQlever()
+    for name in ("put_graph", "write_catalog_entry", "construct_graph", "collection_entry"):
+        monkeypatch.setattr(qlever, name, getattr(store, name))
+    monkeypatch.setattr(settings, "qlever_url", "http://qlever.invalid:7001")
+    return store
+
+
+def test_save_to_qlever_and_open_again(client, fake_qlever):
+    body = client.post(
+        "/api/images",
+        files=[("files", ("harbour.jpg", photo("2021:06:15 10:00:00"), "image/jpeg")),
+               ("files", ("b.png", picture("PNG"), "image/png"))],
+        data={"last_modified": ["2023-02-01", "2023-02-02"]},
+    ).json()
+    cid, img = body["id"], body["images"][0]
+    client.put(f"/api/images/{cid}/bundle", json={"license": LICENCE, "creators": [{"name": "Ada Lovelace"}]})
+    client.put(f"/api/images/{cid}/items/{img['id']}/info",
+               json={**img["info"], "title": "The harbour", "description": "Boats at dusk.", "keywords": ["boats"]})
+
+    saved = client.post(f"/api/images/{cid}/qlever").json()["images"]
+    assert [r["saved"] for r in saved] == [True, True]
+    doc_uuid = str(uuid.UUID(img["id"]))
+    assert saved[0]["uuid"] == doc_uuid and saved[0]["graph"] == f"urn:uuid:{doc_uuid}"
+    assert saved[0]["shacl"]["shapes"] in (None, "CDIF-Discovery-Shapes.ttl")
+    entry = fake_qlever.catalog[doc_uuid]
+    assert entry.kind == "image" and entry.title == "The harbour" and entry.source_file == "harbour.jpg"
+    assert len(fake_qlever.graphs) == 2  # one graph per image
+
+    opened = client.post(f"/api/images/from-qlever/{doc_uuid}")  # one image of the collection
+    assert opened.status_code == 201, opened.text
+    coll = opened.json()
+    assert coll["id"] != cid and len(coll["images"]) == 1
+    back = coll["images"][0]
+    assert back["id"] == img["id"] and back["has_picture"] is False and back["ai_status"] == "done"
+    assert (back["filename"], back["mime"], back["size"], back["md5"]) == ("harbour.jpg", "image/jpeg", img["size"], img["md5"])
+    info = back["info"]
+    assert (info["title"], info["description"], info["keywords"]) == ("The harbour", "Boats at dusk.", ["boats"])
+    assert info["license"] == LICENCE and info["creators"][0]["name"] == "Ada Lovelace"  # the bundle's, now its own
+    assert (info["date_published"], info["date_modified"]) == ("2021-06-15", "2023-02-01")
+    assert info["record_id"] == f"urn:uuid:{doc_uuid}"
+
+    # No picture: no preview and no AI description; a re-save replaces the same graph.
+    assert client.get(back["preview_url"]).status_code == 404
+    assert client.post(f"/api/images/{coll['id']}/items/{back['id']}/describe").status_code in (409, 503)
+    again = client.post(f"/api/images/{coll['id']}/qlever").json()["images"]
+    assert again[0]["uuid"] == doc_uuid and len(fake_qlever.graphs) == 2
+
+
+def test_open_image_record_as_data_file_is_refused(client, fake_qlever):
+    body = upload(client, ("a.jpg", picture(), "image/jpeg")).json()
+    client.post(f"/api/images/{body['id']}/qlever")
+    doc_uuid = str(uuid.UUID(body["images"][0]["id"]))
+    assert client.post(f"/api/qlever/documents/{doc_uuid}/open").status_code == 409
+
+
+def test_open_from_qlever_errors(client, fake_qlever):
+    assert client.post("/api/images/from-qlever/not-a-uuid").status_code == 400
+    assert client.post(f"/api/images/from-qlever/{uuid.uuid4()}").status_code == 404
+
+
+def test_qlever_not_configured(client, monkeypatch):
+    monkeypatch.setattr(settings, "qlever_url", "")
+    body = upload(client, ("a.jpg", picture(), "image/jpeg")).json()
+    assert client.post(f"/api/images/{body['id']}/qlever").status_code == 503
+
+
+def test_catalog_entry_kind():
+    from rdflib import DCTERMS, Literal
+
+    entry = qlever.CatalogEntry(uuid=str(uuid.uuid4()), title="t", dataset_iri="urn:x", source_file="a.jpg",
+                                triples=1, saved_at="2026-11-25T00:00:00Z", kind="image")
+    assert (qlever.entry_iri(entry.uuid), DCTERMS.type, Literal("image")) in qlever._entry_graph(entry)
+
+
+def test_open_drops_the_file_name_title(client, fake_qlever):
+    body = upload(client, ("harbour.jpg", picture(), "image/jpeg")).json()
+    client.post(f"/api/images/{body['id']}/qlever")
+    doc_uuid = str(uuid.UUID(body["images"][0]["id"]))
+    back = client.post(f"/api/images/from-qlever/{doc_uuid}").json()["images"][0]
+    assert back["info"]["title"] == ""  # "harbour" was only the stand-in
+
+
+def test_save_and_open_a_whole_collection(client, fake_qlever):
+    body = client.post(
+        "/api/images",
+        files=[("files", (f"{n}.jpg", photo(None), "image/jpeg")) for n in ("a", "b", "c")],
+    ).json()
+    cid, imgs = body["id"], body["images"]
+    bundle = {"title": "Harbour fieldwork", "license": LICENCE, "creators": [{"name": "Ada Lovelace"}],
+              "keywords": ["fieldwork"], "spatial": ["Norway"], "date_modified": "2024-01-01"}
+    client.put(f"/api/images/{cid}/bundle", json=bundle)
+    # a: inherits everything; b: own licence and creator; c: own keyword and title
+    client.put(f"/api/images/{cid}/items/{imgs[1]['id']}/info",
+               json={"license": "https://creativecommons.org/publicdomain/zero/1.0/", "creators": [{"name": "Grace Hopper"}]})
+    client.put(f"/api/images/{cid}/items/{imgs[2]['id']}/info", json={"title": "The pier", "keywords": ["pier"]})
+
+    saved = client.post(f"/api/images/{cid}/qlever").json()
+    coll_uuid = str(uuid.UUID(cid))
+    assert saved["uuid"] == coll_uuid and saved["title"] == "Harbour fieldwork"
+    entry = fake_qlever.catalog[coll_uuid]
+    assert entry.kind == "image-collection" and sorted(entry.parts) == sorted(str(uuid.UUID(i["id"])) for i in imgs)
+    assert len(fake_qlever.graphs) == 3  # the collection itself is no CDIF graph
+
+    opened = client.post(f"/api/images/from-qlever/{coll_uuid}")
+    assert opened.status_code == 201, opened.text
+    coll = opened.json()
+    assert coll["id"] == cid  # the same collection: a re-save updates it
+    b = coll["bundle"]
+    assert (b["title"], b["license"], b["creators"][0]["name"], b["keywords"], b["spatial"]) == (
+        "Harbour fieldwork", LICENCE, "Ada Lovelace", ["fieldwork"], ["Norway"])
+    own = {i["filename"]: i["info"] for i in coll["images"]}
+    assert own["a.jpg"]["license"] == "" and own["a.jpg"]["creators"] == [] and own["a.jpg"]["keywords"] == []
+    assert own["a.jpg"]["date_modified"] == "" and own["a.jpg"]["spatial"] == []  # inherited again
+    assert own["b.jpg"]["license"].endswith("zero/1.0/") and own["b.jpg"]["creators"][0]["name"] == "Grace Hopper"
+    assert own["c.jpg"]["title"] == "The pier" and own["c.jpg"]["keywords"] == ["pier"]
+    eff = {i["filename"]: i["effective"] for i in coll["images"]}
+    assert eff["a.jpg"]["license"] == LICENCE and eff["c.jpg"]["keywords"] == ["pier", "fieldwork"]
+
+    again = client.post(f"/api/images/{cid}/qlever").json()
+    assert again["uuid"] == coll_uuid and len(fake_qlever.graphs) == 3
+
+
+def test_open_collection_with_a_missing_image(client, fake_qlever):
+    body = upload(client, ("a.jpg", picture(), "image/jpeg"), ("b.jpg", picture(), "image/jpeg")).json()
+    client.post(f"/api/images/{body['id']}/qlever")
+    gone = str(uuid.UUID(body["images"][1]["id"]))
+    del fake_qlever.graphs[f"urn:uuid:{gone}"]
+    coll = client.post(f"/api/images/from-qlever/{uuid.UUID(body['id'])}").json()
+    assert [i["filename"] for i in coll["images"]] == ["a.jpg"]
+    assert coll["rejected"][0]["filename"] == gone

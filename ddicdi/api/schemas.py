@@ -162,6 +162,10 @@ class QleverDocumentOut(BaseModel):
     saved_at: str | None = None
     saved_by: str | None = None
     triples: int | None = None
+    kind: str = Field(
+        "dataset", description='"image", "image-collection" (its images listed in parts) or "dataset" (a data file)'
+    )
+    parts: list[str] = Field(default_factory=list, description="an image collection: the UUIDs of its images")
 
 
 class FileInfo(BaseModel):

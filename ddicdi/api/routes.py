@@ -16,6 +16,7 @@ from ..cdi.ids import IdMap, assign_ids
 from ..cdi.jsonld import GenerateOptions, build_document
 from ..cdif import convert_document, dataset_header
 from ..cdif.reverse import NotADocument, document_to_meta
+from ..images.cdif import is_image_graph
 from ..cdi.statistics import STATISTIC_NAMES
 from ..config import settings
 from ..data import Dataset, DataTooLarge
@@ -882,6 +883,9 @@ async def open_qlever_document(doc_uuid: str, store: UploadStore = Depends(get_s
             raise _qlever_call(exc)
         if not len(graph):
             raise HTTPException(status_code=404, detail=f"No document {doc_uuid} in QLever")
+
+        if is_image_graph(graph):
+            raise HTTPException(status_code=409, detail="This document is an image record; open it as an image (POST /api/images/from-qlever/{uuid})")
 
         def build() -> tuple[str, FileInfo]:
             try:

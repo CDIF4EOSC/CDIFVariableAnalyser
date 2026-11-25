@@ -74,10 +74,17 @@ class ImageItem:
     ai_status: str = "pending"
     ai_error: str = ""
     suggestion: Suggestion | None = None
+    # False for an image opened from QLever: only its metadata came back, no preview.
+    has_picture: bool = True
+
+    @property
+    def doc_uuid(self) -> str:
+        """The image's UUID in canonical form: its QLever document id and graph name."""
+        return str(uuid.UUID(self.uid))
 
     @property
     def record_iri(self) -> str:
-        return self.info.record_id.strip() or f"urn:uuid:{self.uid}"
+        return self.info.record_id.strip() or f"urn:uuid:{self.doc_uuid}"
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "ImageItem":
@@ -103,6 +110,11 @@ class ImageCollection:
             if item.uid == image_id:
                 return item
         raise CollectionNotFound(image_id)
+
+    @property
+    def doc_uuid(self) -> str:
+        """The collection's UUID in canonical form: its QLever catalog id."""
+        return str(uuid.UUID(self.uid))
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -136,6 +148,33 @@ def effective_info(bundle: DatasetInfo, item: ImageItem) -> DatasetInfo:
     return DatasetInfo(**values)
 
 
+def _comparable(value: Any) -> Any:
+    """A field value as it can be compared after a CDIF round trip (lists come back sorted)."""
+    if isinstance(value, list):
+        return sorted(json.dumps(asdict(v) if hasattr(v, "__dataclass_fields__") else v, sort_keys=True) for v in value)
+    if hasattr(value, "__dataclass_fields__"):
+        return json.dumps(asdict(value), sort_keys=True)
+    return value
+
+
+def split_inherited(bundle: DatasetInfo, info: DatasetInfo) -> DatasetInfo:
+    """The inverse of ``effective_info``: an image's description read back from its CDIF,
+    with what equals the bundle left empty (inherited again) and the bundle's keywords
+    removed. A field the image set to the bundle's own value comes back inherited: the
+    CDIF written is the same either way."""
+    values: dict[str, Any] = {}
+    for f in fields(DatasetInfo):
+        mine = getattr(info, f.name)
+        theirs = getattr(bundle, f.name)
+        if f.name in OWN_FIELDS or not theirs or _comparable(mine) != _comparable(theirs):
+            values[f.name] = mine
+        else:
+            values[f.name] = None if f.name == "publisher" else type(mine)()
+    shared = {k.strip().lower() for k in bundle.keywords}
+    values["keywords"] = [k for k in info.keywords if k.strip().lower() not in shared]
+    return DatasetInfo(**values)
+
+
 class ImageStore:
     """Image collections under ``root`` (the tabular uploads' work directory)."""
 
@@ -154,9 +193,23 @@ class ImageStore:
             raise CollectionNotFound(collection_id)
         return path
 
-    def create(self) -> ImageCollection:
-        coll = ImageCollection(uid=uuid.uuid4().hex)
+    def create(self, uid: str | None = None) -> ImageCollection:
+        coll = ImageCollection(uid=uid or uuid.uuid4().hex)
         self._dir(coll.uid).mkdir(parents=True)
+        self.save(coll)
+        return coll
+
+    def create_with(self, items: list[ImageItem], uid: str | None = None,
+                    bundle: DatasetInfo | None = None) -> ImageCollection:
+        """A collection holding ``items`` without pictures (opened from QLever). With
+        ``uid`` (a saved collection's), a workspace already open under it is replaced,
+        so the next save updates the same collection."""
+        if uid:
+            shutil.rmtree(self._dir(uid), ignore_errors=True)
+        coll = self.create(uid)
+        coll.images.extend(items)
+        if bundle is not None:
+            coll.bundle = bundle
         self.save(coll)
         return coll
 

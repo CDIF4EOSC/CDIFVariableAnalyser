@@ -490,7 +490,12 @@ export function DatasetPanel({ info, filename, fileSize, fileMd5, vocabularies, 
               set={set}
               vocabularies={vocabularies}
               keywords={bundle ? "bundle" : true}
-              citationTop={!bundle && (
+              citationTop={bundle ? (
+                <label className="field">
+                  <span>Collection name <span className="hint-label">names the collection in QLever; images keep their own titles</span></span>
+                  <input value={draft.title} placeholder="e.g. Harbour fieldwork 2021" onChange={(e) => set("title", e.target.value)} />
+                </label>
+              ) : (
                 <>
                   <label className="field">
                     <span>Title</span>
