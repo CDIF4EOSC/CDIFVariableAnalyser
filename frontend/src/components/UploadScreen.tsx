@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import { IconCode, IconLogo, IconSpinner, IconUpload } from "./Icons";
+import cdif4eoscLogo from "../assets/cdif4eosc-logo.png";
 
 interface Props {
   onFile: (f: File) => Promise<void>;
@@ -188,8 +189,11 @@ export function UploadScreen({ onFile, onImages, busy, error, health, onApiDocs,
         </div>
       </main>
       <footer className="upload-foot">
-        <span>Developed by Sikt in the WorldFAIR project, continued under FAIR-IMPACT.</span>
-        <span>Contact: Benjamin Beuster</span>
+        <a className="foot-project" href="https://cdif4eosc.eu/" target="_blank" rel="noreferrer" title="CDIF4EOSC project">
+          <img src={cdif4eoscLogo} alt="CDIF4EOSC" />
+        </a>
+        <span>Developed by Sikt in the <a href="https://cdif4eosc.eu/" target="_blank" rel="noreferrer">CDIF4EOSC</a> project.</span>
+        <span>Contact: <a href="mailto:benjamin.beuster@sikt.no" title="benjamin.beuster@sikt.no">Benjamin Beuster</a></span>
         <span className="grow" />
         <span className={`ok ${health ? "" : "down"}`} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
           <span style={{ width: 7, height: 7, borderRadius: "50%", background: health ? "#22c55e" : "#ef4444" }} />

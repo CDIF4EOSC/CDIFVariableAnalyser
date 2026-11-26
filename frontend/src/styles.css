@@ -474,7 +474,11 @@ pre.code { margin: 0; padding: 12px 0; font-family: var(--mono); font-size: 12px
 .classes { display: flex; flex-wrap: wrap; gap: 6px; }
 .classes a { font-family: var(--mono); font-size: 11px; padding: 3px 8px; border-radius: 6px; background: #f3f4f6; color: var(--ink-2); text-decoration: none; }
 .classes a:hover { background: #e5e7eb; }
-.upload-foot { height: 44px; display: flex; align-items: center; gap: 18px; padding: 0 80px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--border); background: #fff; }
+.upload-foot { min-height: 56px; display: flex; align-items: center; gap: 18px; padding: 8px 80px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--border); background: #fff; }
+.upload-foot a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+.upload-foot a:hover { color: var(--ink); }
+.upload-foot .foot-project { display: inline-flex; text-decoration: none; }
+.upload-foot .foot-project img { height: 30px; width: auto; display: block; }
 .err-box { padding: 12px 14px; border-radius: 10px; background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; font-size: 13px; }
 
 @media (max-width: 1100px) {
@@ -483,7 +487,7 @@ pre.code { margin: 0; padding: 12px 0; font-family: var(--mono); font-size: 12px
   .right { min-height: 480px; }
   .upload-inner { padding: 32px 24px; }
   .upload-main, .upload-side { grid-column: span 12; }
-  .upload-foot { padding: 0 24px; }
+  .upload-foot { padding: 8px 24px; flex-wrap: wrap; }
 }
 
 /* -- Statistics tab ------------------------------------------------------------- */
